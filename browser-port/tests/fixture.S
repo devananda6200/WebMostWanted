@@ -10,6 +10,14 @@
 .globl _x87_control, _x87_clear, _x87_init, _x87_wait, _x87_rounded_store
 .globl _cpuid_detect
 .globl _cpu_features
+.globl _idiv32_ecx, _idiv32_eax, _idiv32_edx, _idiv32_mem, _idiv32_pointer
+.globl _div32_ecx, _div32_eax, _div32_edx, _div32_mem, _div32_pointer
+.globl _idiv16_unsupported, _div8_unsupported
+.globl _shld32_cl, _shld32_imm, _shld32_mem, _shld32_alias
+.globl _shrd32_cl, _shrd32_imm, _shrd32_mem, _shrd32_alias
+.globl _shld16_unsupported
+.globl _x87_abs, _x87_abs_compare, _x87_compare64, _x87_compare_empty
+.globl _x87_abs_empty
 
 _arithmetic:
     push ebp
@@ -222,4 +230,97 @@ _cpu_features:
     mov eax, dword ptr [esp+4]
     mov ecx, dword ptr [esp+8]
     cpuid
+    ret
+_idiv32_ecx:
+    idiv ecx
+    ret
+_idiv32_eax:
+    idiv eax
+    ret
+_idiv32_edx:
+    idiv edx
+    ret
+_idiv32_mem:
+    idiv dword ptr [esp+4]
+    ret
+_idiv32_pointer:
+    idiv dword ptr [eax]
+    ret
+_div32_ecx:
+    div ecx
+    ret
+_div32_eax:
+    div eax
+    ret
+_div32_edx:
+    div edx
+    ret
+_div32_mem:
+    div dword ptr [esp+4]
+    ret
+_div32_pointer:
+    div dword ptr [eax]
+    ret
+_idiv16_unsupported:
+    idiv cx
+    ret
+_div8_unsupported:
+    div cl
+    ret
+_shld32_cl:
+    shld eax, edx, cl
+    ret
+_shld32_imm:
+    shld eax, edx, 9
+    ret
+_shld32_mem:
+    shld dword ptr [esi], edx, cl
+    ret
+_shld32_alias:
+    shld ecx, ecx, cl
+    ret
+_shrd32_cl:
+    shrd eax, edx, cl
+    ret
+_shrd32_imm:
+    shrd eax, edx, 9
+    ret
+_shrd32_mem:
+    shrd dword ptr [esi], edx, cl
+    ret
+_shrd32_alias:
+    shrd ecx, ecx, cl
+    ret
+_shld16_unsupported:
+    shld ax, dx, cl
+    ret
+_x87_abs:
+    mov esi, dword ptr [esp+4]
+    mov edi, dword ptr [esp+8]
+    fld qword ptr [esi]
+    fabs
+    fnstsw ax
+    fstp qword ptr [edi]
+    ret
+_x87_abs_compare:
+    mov esi, dword ptr [esp+4]
+    mov edi, dword ptr [esp+8]
+    fld qword ptr [esi]
+    fabs
+    fcomp dword ptr [edi]
+    fnstsw ax
+    ret
+_x87_compare64:
+    mov esi, dword ptr [esp+4]
+    mov edi, dword ptr [esp+8]
+    fld qword ptr [esi]
+    fcom qword ptr [edi]
+    fnstsw ax
+    fstp qword ptr [edi+8]
+    ret
+_x87_compare_empty:
+    fcomp dword ptr [esi]
+    ret
+_x87_abs_empty:
+    fabs
     ret

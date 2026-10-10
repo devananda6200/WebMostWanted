@@ -23,6 +23,11 @@ export function initialize(m,c,image=null) {
   if(c.fsBase!==undefined)m._set_fs_base(c.fsBase);
   if(c.fpuControl!==undefined)m._set_fpu_control(c.fpuControl);
   if(c.fpuStatus!==undefined)m._set_fpu_status(c.fpuStatus);
+  if(c.testCheckpoint) {
+    assert.equal(m._run(100,c.testCheckpoint.eip),1,`${c.id}: authored fixture checkpoint`);
+    assert.equal(m._get_fpu_depth(),c.testCheckpoint.fpuDepth,`${c.id}: loaded x87 stack`);
+    m._set_fpu_status(c.testCheckpoint.fpuStatus);
+  }
   return memory;
 }
 
@@ -65,6 +70,9 @@ try {
         for(const w of c.unchangedOnFault||[])assert.deepEqual([...faultMemory.subarray(w.address,w.address+w.bytes.length)],w.bytes,'faulting store must roll back earlier lanes');
         for(const [key,value] of Object.entries(c.expectedFpuOnFault||{}))assert.equal(module[`_get_fpu_${key}`](),value,`${c.id}: x87 ${key} on fault`);
         c.expectedRegistersOnFault?.forEach((value,i)=>assert.equal(module._get_reg(i)>>>0,value,`${c.id}: register ${i} on fault`));
+        if(c.expectedEipOnFault!==undefined)assert.equal(module._get_eip()>>>0,c.expectedEipOnFault,`${c.id}: fault instruction`);
+        if(c.expectedFlagsOnFault!==undefined)assert.equal(module._get_flags()>>>0,c.expectedFlagsOnFault,`${c.id}: flags on fault`);
+        if(c.expectedFaultText)assert.ok(module.UTF8ToString(module._fault_text()).includes(c.expectedFaultText),`${c.id}: fault reason`);
         if(c.id==='unmapped') {
           for(let i=0;i<8;i++)assert.equal(module._get_reg(i)>>>0,c.registers[i],`fault must preserve register ${i}`);
           assert.equal(module._get_eip()>>>0,c.entry,'fault must preserve instruction address');

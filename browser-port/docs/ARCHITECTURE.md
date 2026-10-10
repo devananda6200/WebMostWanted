@@ -71,12 +71,38 @@ CRT's `0x023f` word, exception clearing and exact stores under four rounding mod
 This is an emulator reference, not a native hardware proof of reserved-bit values.
 The architectural reference is [Intel Volume 1, Chapter 8](https://cdrdv2-public.intel.com/782149/253665-sdm-vol-1.pdf).
 
+Finite normal/zero FABS and memory FCOM/FCOMP are supported without arithmetic
+rounding. Tests preserve raw Unicorn status/EAX evidence and explicitly correct
+only C1 to Intel's defined zero: Unicorn 2.1.4 incorrectly retains a seeded C1.
+The initial raw differential run failed on that bit, and the correction is named
+`oracle_adjustment` in each affected case. All other state remains differential.
+This is an identified oracle defect, not evidence of full x87 compatibility.
+Pending unmasked exceptions on these waiting instructions have separate
+specification tests: this Unicorn version raises them on explicit WAIT but
+incorrectly continues through FABS/FCOM/FCOMP. The runtime checks them first and
+stops with a pending-exception diagnostic, preserving state.
+
 Rounded stores, nonfinite/denormal loads or stores, and pending unmasked x87
 exception delivery fail explicitly. Control-word support does not implement
 80-bit arithmetic. MXCSR exception behavior, arbitrary NaN payloads, complete instruction-prefix
 semantics, guest exceptions, multithreading, DLL loading, callbacks, and shaders
 are not validated. Unsupported required instructions/imports stop execution.
 Passing a short routine proves only those tested operations and input classes.
+
+32-bit DIV/IDIV use the full EDX:EAX dividend, capture the divisor before any
+register write, and check zero/overflow before committing quotient and remainder.
+Guest #DE delivery remains an explicit barrier. The signed INT64_MIN / -1 pair
+is checked before C++ division: the pinned Unicorn helper crashes its host on
+this case, so its regression is specification-based rather than a falsely
+claimed emulator comparison. Other division edges use Unicorn's guest vector 0.
+See [Intel DIV/IDIV](https://cdrdv2-public.intel.com/812383/253666-sdm-vol-2a.pdf)
+and the [pinned reference helper](https://github.com/unicorn-engine/unicorn/blob/2.1.4/qemu/target/i386/int_helper.c).
+Successful division arithmetic flags are undefined and excluded from comparison.
+
+32-bit SHLD/SHRD mask the count to five bits and check result flags; OF is checked
+only for a count of one, and AF is undefined. Memory operands still perform their
+checked read/write when the effective count is zero. Narrow forms remain explicit
+unsupported operations until their semantics are separately tested.
 
 The decoder refuses partial instructions at a section boundary, even where the
 next virtual section is also executable. SSE2 scalar-double MOVSD is currently

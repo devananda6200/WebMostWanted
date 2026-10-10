@@ -4,6 +4,25 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-11T02:15:04+05:30 — arithmetic, bounded constructor discovery, and heap resizing
+
+- Changed: Implemented DIV/IDIV, SHLD/SHRD, finite x87 ABS/comparison/status
+  behavior, HeapReAlloc contracts, native heap probe, and validated initializer
+  seeding. Updated browser/Node state checkpoints and project documentation.
+- Why: Resolve observed original constructor barriers using repeatable rules,
+  with explicit failure for unsupported exceptions and floating-point behavior.
+- Validation: 54 Python tests, 1,402 Node/browser binary cases, 33 Win32 Wasm
+  groups, 2,048 native NLS values, eight conversion and four heap cases passed.
+  Browser/Node reach FSUB at 0x0088585b after 1,765,180 dispatches. Read-only
+  reviews covered arithmetic, heap ownership, oracle checkpoints and vtables.
+- Corrections: Named Unicorn division/C1/pending-exception defects now retain
+  raw evidence and use explicit specification checks; a signed-overflow input
+  was removed from successful-division fixtures. Exact stores clear C1 only
+  after a successful write. Generated code is never hand patched.
+- Limitations: M1 verified for tested subset; M2 partial. No menu, game frame,
+  driving, race or results. Rounded/full x87, rendering and major platform
+  services remain incomplete. Human review pending; generated artifacts private.
+
 ## 2026-10-11T01:47:07+05:30 — execute early game constructors in Wasm
 
 - Changed: Added verified CP1252 casing/best-fit conversion, heap validation,

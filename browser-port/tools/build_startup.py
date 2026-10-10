@@ -16,7 +16,7 @@ TEB=0x02500000
 IMPORT_BASE=0x03100000
 
 
-def prepare(limit=8000, extra_seeds=(), from_trace=False, max_steps=2000000):
+def prepare(limit=24000, extra_seeds=(), from_trace=False, max_steps=2000000):
     started=time.perf_counter()
     if not 1<=max_steps<=10000000: raise ValueError('Startup max_steps must be in 1..10000000')
     sources=('translator/lift.py','runtime/guest.hpp','runtime/win32.hpp','tools/build_startup.py','tools/build_tests.py','tools/toolchain.py')
@@ -98,7 +98,7 @@ def prepare(limit=8000, extra_seeds=(), from_trace=False, max_steps=2000000):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--limit',type=int,default=8000)
+    parser.add_argument('--limit',type=int,default=24000)
     parser.add_argument('--seed',type=lambda x:int(x,0),action='append',default=[])
     parser.add_argument('--from-trace',action='store_true',help='Prioritize original instruction addresses from the matching last local execution trace')
     parser.add_argument('--max-steps',type=int,default=2000000)

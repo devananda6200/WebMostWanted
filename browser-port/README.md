@@ -47,7 +47,7 @@ To build and probe the original entry path:
 # Incorporate observed executable addresses after an untranslated-target fault:
 .\scripts\startup.ps1 -FromTrace
 # Optional bounded probe settings (the current defaults):
-.\scripts\startup.ps1 -FromTrace -Limit 8000 -MaxSteps 2000000
+.\scripts\startup.ps1 -FromTrace -Limit 24000 -MaxSteps 2000000
 ```
 
 This currently returns a nonzero exit code at a required compatibility barrier.
@@ -59,8 +59,21 @@ bound to the audited executable hash. Each probe appends its source/build
 identity, stack words, a bounded fault-memory window, trace, and exact reproduction command to
 `artifacts/startup-history.jsonl`. This is a diagnostic build, not a performance
 build or a successful game launch.
-The current probe reaches original game constructors, then stops at an
-unsupported signed division. All initialization has not completed.
+The current probe reaches original game constructors, then stops at a required
+compatibility barrier. All initialization has not completed.
+
+When the faulting untranslated address is uniquely present in the audited
+initializer table, seed at most 64 table slots with the verified helper:
+
+```powershell
+.\.venv\Scripts\python.exe -m tools.seed_initializers --count 64
+.\scripts\startup.ps1 -FromTrace
+```
+
+The helper checks executable, build, Wasm, image and trace identities, preserves
+prior local seeds, and writes ignored `artifacts/initializer-seeds.json` evidence.
+It rejects ordinary missing targets and unsupported-operation faults; use the
+normal trace expansion or implement the missing semantics for those cases.
 
 ## What the commands actually test
 
@@ -71,6 +84,9 @@ executes identical mapped bytes with isolated inputs and no host syscalls.
 Tests compare general registers, defined flag bits, XMM registers, return
 addresses, and watched input/output/stack memory. The real routine is pinned
 by executable hash, address, size, and routine-byte hash.
+Synthetic controlled-state cases also check x87 flags after an explicit test
+checkpoint. Known Unicorn C1/#MF and INT64_MIN division defects have named
+specification checks; raw oracle differences remain in local evidence.
 The default build also generates a differential reference for the original
 entry prefix through its first imported call, with an explicit 32-bit FS/TEB
 model. `test.ps1` additionally compiles and runs focused Win32-contract tests;
@@ -81,6 +97,9 @@ For selected native Windows NLS contract comparisons, run
 This calls trusted system APIs on authored in-memory strings and writes ignored
 reference data. It does not execute original game code on Windows. The native
 host's NLS behavior is recorded separately from the declared XP process profile.
+For authored native private-heap comparisons, also run
+`.\.venv\Scripts\python.exe -m tools.win32_heap_reference`. This tests four
+reallocation observations on trusted system APIs, with ignored JSON evidence.
 
 The runtime currently uses a 64 MiB guest address window and an 80 MiB Wasm heap
 per module. It has explicit page permissions, checked accesses, fault rollback,

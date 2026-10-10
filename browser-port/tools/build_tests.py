@@ -8,8 +8,9 @@ from pathlib import Path
 import random
 import struct
 import subprocess
+import capstone as cs
 
-from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE
+from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE, UC_HOOK_INTR
 from unicorn import x86_const as x86
 from translator.lift import PEImage, lift
 from tools.game_config import load_game_root
@@ -46,7 +47,13 @@ def compile_fixture():
            'add_flags','sub_flags','adc_flags','sbb_flags','byte_flags','shifts','copy',
            'unmapped','unsupported','code_write','indirect_missing','xchg_alias','partial_simd_store','stdcall_call','stdcall_callee',
            'sse_movsd_unsupported','popfd_reserved','popfd_control_unsupported',
-           'x87_control','x87_clear','x87_init','x87_wait','x87_rounded_store','cpuid_detect','cpu_features']
+           'x87_control','x87_clear','x87_init','x87_wait','x87_rounded_store','cpuid_detect','cpu_features',
+           'idiv32_ecx','idiv32_eax','idiv32_edx','idiv32_mem','idiv32_pointer',
+           'div32_ecx','div32_eax','div32_edx','div32_mem','div32_pointer',
+           'idiv16_unsupported','div8_unsupported',
+           'shld32_cl','shld32_imm','shld32_mem','shld32_alias',
+           'shrd32_cl','shrd32_imm','shrd32_mem','shrd32_alias','shld16_unsupported',
+           'x87_abs','x87_abs_compare','x87_compare64','x87_compare_empty','x87_abs_empty']
     command=[*linker_command(),'/machine:x86','/subsystem:console','/entry:arithmetic',
              '/nodefaultlib','/fixed','/base:0x1000000','/timestamp:0','/safeseh:no',
              f'/out:{exe}',*(f'/export:{name}' for name in names),str(obj)]
@@ -100,7 +107,7 @@ def configure_reference_cpu(u):
     u.reg_write(x86.UC_X86_REG_FPSW,0)
 
 
-def reference(c):
+def reference_cpu(c):
     """Isolated CPU emulator: mapped test bytes only; no Windows/syscalls/network."""
     u=Uc(UC_ARCH_X86,UC_MODE_32)
     configure_reference_cpu(u)
@@ -113,12 +120,24 @@ def reference(c):
     u.reg_write(x86.UC_X86_REG_EFLAGS,c['eflags'])
     u.reg_write(x86.UC_X86_REG_FPCW,c.get('fpuControl',0x037f))
     u.reg_write(x86.UC_X86_REG_FPSW,c.get('fpuStatus',0))
+    return u
+
+
+def reference(c):
+    u=reference_cpu(c)
     count=0
     def tick(_u,address,size,user):
         nonlocal count
         count+=1
     u.hook_add(UC_HOOK_CODE,tick)
-    u.emu_start(c['entry'],c['stop'],timeout=2_000_000,count=c['maxSteps'])
+    if 'testCheckpoint' in c:
+        checkpoint=c['testCheckpoint']
+        u.emu_start(c['entry'],checkpoint['eip'],timeout=2_000_000,count=100)
+        if u.reg_read(x86.UC_X86_REG_EIP)!=checkpoint['eip']:
+            raise AssertionError('Authored fixture did not reach its controlled-state checkpoint')
+        u.reg_write(x86.UC_X86_REG_FPSW,checkpoint['fpuStatus'])
+    start=c.get('testCheckpoint',{}).get('eip',c['entry'])
+    u.emu_start(start,c['stop'],timeout=2_000_000,count=c['maxSteps'])
     if u.reg_read(x86.UC_X86_REG_EIP)!=c['stop']:
         raise RuntimeError(f"Reference did not return: {c['id']}")
     c['expected']={'registers':[u.reg_read(r) for r in REG_IDS],
@@ -129,6 +148,89 @@ def reference(c):
                    'memory':[{'address':w['address'],'bytes':list(u.mem_read(w['address'],w['size']))} for w in c.pop('watches')],
                    'referenceSteps':count}
     return c
+
+
+def division_case(image,name,dividend,divisor):
+    c=case(image,name,[divisor],flags=0x200ed7)
+    c['registers'][0]=dividend&0xffffffff
+    c['registers'][1]=divisor&0xffffffff
+    c['registers'][2]=(dividend>>32)&0xffffffff
+    # Only the six arithmetic bits are undefined. Compare control bits too.
+    c['flagsMask']=0xffffffff^FLAGS
+    return c
+
+
+def division_cases(image):
+    rng=random.Random(0x464f34)
+    signed=[(0,1),(12,16),(7,3),(-7,3),(7,-3),(-7,-3),(-1,2),
+            (0x7fffffff,1),(-0x80000000,1),(0x80000000,-1),
+            (0x100000000,3),(-0x100000000,3),(0x7fffffff*0x7fffffff,0x7fffffff),
+            ((1<<62)+0x7fffffff,-0x80000000)]
+    unsigned=[(0,1),(12,16),(7,3),(0xffffffff,1),(0x100000000,2),
+              (0xffffffff*0xffffffff+0xfffffffe,0xffffffff)]
+    for pairs,is_signed in ((signed,True),(unsigned,False)):
+        for _ in range(32):
+            divisor=rng.randrange(-0x80000000,0x80000000) if is_signed else rng.randrange(1,0x100000000)
+            if not divisor: divisor=1
+            quotient=rng.randrange(-0x80000000,0x80000000) if is_signed else rng.getrandbits(32)
+            dividend=quotient*divisor
+            remainder=rng.randrange(abs(divisor))
+            dividend+=-remainder if dividend<0 else remainder
+            pairs.append((dividend,divisor))
+    cases=[]
+    for prefix,pairs in (('idiv32',signed),('div32',unsigned)):
+        for suffix in ('ecx','mem'):
+            for i,(dividend,divisor) in enumerate(pairs):
+                cases.append(reference(division_case(image,f'{prefix}_{suffix}/{i}',dividend,divisor)))
+        # Read aliased register/address operands before writing EAX or EDX.
+        aliases=(7,0xfffffffe,0x80000001) if prefix=='idiv32' else (7,0xfffffffe,0x180000001)
+        for i,dividend in enumerate(aliases):
+            cases.append(reference(division_case(image,f'{prefix}_eax/{i}',dividend,123)))
+        c=division_case(image,f'{prefix}_pointer',DATA,3)
+        c['writes'].append({'address':DATA,'bytes':dwords(3)})
+        cases.append(reference(c))
+    # IDIV EDX can succeed with a negative high half; DIV EDX always overflows
+    # for nonzero EDX and is checked with the faults below.
+    cases.append(reference(division_case(image,'idiv32_edx',-7,123)))
+    return cases
+
+
+def division_faults(image):
+    faults=[]
+    for prefix,pairs in (
+        ('idiv32',[(7,0),(0x80000000,1),(-0x80000001,1),(-0x80000000,-1),(0x7fffffffffffffff,1)]),
+        ('div32',[(7,0),(0x100000000,1),(0xffffffffffffffff,0xffffffff)])):
+        for suffix in ('ecx','mem'):
+            for i,(dividend,divisor) in enumerate(pairs):
+                c=division_case(image,f'{prefix}_{suffix}/exception-{i}',dividend,divisor)
+                u=reference_cpu(c);interrupts=[]
+                def interrupt(cpu,number,_):
+                    interrupts.append(number);cpu.emu_stop()
+                u.hook_add(UC_HOOK_INTR,interrupt)
+                u.emu_start(c['entry'],c['stop'],timeout=2_000_000,count=10)
+                if interrupts!=[0] or u.reg_read(x86.UC_X86_REG_EIP)!=c['entry']:
+                    raise AssertionError(f"Expected #DE at original instruction: {c['id']}")
+                c['expectedFault']=2;c['expectedEipOnFault']=c['entry']
+                c['expectedFlagsOnFault']=u.reg_read(x86.UC_X86_REG_EFLAGS)
+                c['expectedRegistersOnFault']=[u.reg_read(r) for r in REG_IDS]
+                c['unchangedOnFault']=[{'address':w['address'],'bytes':list(u.mem_read(w['address'],w['size']))} for w in c.pop('watches')]
+                c['referenceException']={'vector':0,'engine':'Unicorn 2.1.4'}
+                faults.append(c)
+    # Pinned Unicorn's native signed division crashes its process on this pair.
+    # Intel specifies #DE. Never send it to the in-process development oracle.
+    c=division_case(image,'idiv32_ecx/int64-min-minus-one',-(1<<63),-1)
+    c['expectedFault']=2;c['expectedEipOnFault']=c['entry']
+    c['expectedRegistersOnFault']=c['registers'].copy();c['expectedFlagsOnFault']=c['eflags']
+    c['referenceException']={'vector':0,'engine':'Intel specification; Unicorn host overflow excluded'}
+    faults.append(c)
+    for name in ('idiv32_pointer','div32_pointer'):
+        c=division_case(image,name+'/unreadable',0x03fff000,0)
+        c['expectedFault']=1;c['expectedEipOnFault']=c['entry']
+        c['expectedRegistersOnFault']=c['registers'].copy();faults.append(c)
+    c=division_case(image,'div32_edx/overflow',0x100000007,0)
+    c['expectedFault']=2;c['expectedEipOnFault']=c['entry']
+    c['expectedRegistersOnFault']=c['registers'].copy();faults.append(c)
+    return faults
 
 
 def synthetic_cases(image):
@@ -179,7 +281,54 @@ def synthetic_cases(image):
         c=case(image,f'x87_load_store/control-{control:x}',[DATA,DATA+128],
                writes=[{'address':DATA,'bytes':list(struct.pack('<f',1.5))}])
         c['fpuControl']=control;cases.append(reference(c))
-    return cases
+    for name in ('shld32','shrd32'):
+        for i,(dest,count) in enumerate((a,n) for a in boundary for n in (0,1,9,31,32,33,255,256,257)):
+            for form in ('cl','mem','alias'):
+                c=case(image,f'{name}_{form}/{i}',flags=0x200ed7 if i%2 else 0x202)
+                c['registers'][0]=dest;c['registers'][2]=boundary[-1-i%len(boundary)]
+                c['registers'][1]=count;c['registers'][6]=DATA
+                c['writes'].append({'address':DATA,'bytes':dwords(dest)})
+                shift=count&31
+                c['flagsMask']=0xffffffff if shift==0 else 0xffffffff&~(0x10|(0x800 if shift!=1 else 0))
+                cases.append(reference(c))
+        for i,dest in enumerate(boundary):
+            c=case(image,f'{name}_imm/{i}');c['registers'][0]=dest;c['registers'][2]=~dest&0xffffffff
+            c['flagsMask']=0xffffffff&~(0x10|0x800);cases.append(reference(c))
+    float_pairs=[(-0.0,0.0),(0.0,-0.0),(1.0,2.0),(-1.0,2.0),(-3.0,2.0),
+                 (3.0,3.0),(-2.0**-100,2.0**-100),(-2.0**-100,0.0),(-2.0**100,2.0**100)]
+    for i,(value,other) in enumerate(float_pairs):
+        for name in ('x87_abs','x87_abs_compare','x87_compare64'):
+            c=case(image,f'{name}/{i}',[DATA,DATA+128],writes=[
+                {'address':DATA,'bytes':list(struct.pack('<d',value))},
+                {'address':DATA+128,'bytes':list(struct.pack('<d' if name=='x87_compare64' else '<f',other))}])
+            c['fpuControl']=0x023f;c['fpuStatus']=0x4700
+            result=reference(c)
+            # Unicorn 2.1.4 incorrectly retains C1 through these instructions.
+            # Keep its raw result as evidence, and independently assert Intel's
+            # defined C1=0 (also visible through the fixture's FNSTSW AX).
+            expected=result['expected']
+            result['oracle_adjustment']={
+                'reason':'Intel-defined C1=0; pinned Unicorn preserves the seeded C1 bit',
+                'source':'https://cdrdv2-public.intel.com/812383/253666-sdm-vol-2a.pdf',
+                'raw_fpu_status':expected['fpuStatus'],'raw_eax':expected['registers'][0],
+                'corrected_mask':0x0200}
+            expected['fpuStatus']&=~0x0200;expected['registers'][0]&=~0x0200
+            cases.append(result)
+    # Seed C1 after FLD, so that each new instruction must clear it itself.
+    for name,mnemonic in (('x87_abs','fabs'),('x87_abs_compare','fcomp'),('x87_compare64','fcom')):
+        c=case(image,name+'/c1-after-load',[DATA,DATA+128],writes=[
+            {'address':DATA,'bytes':list(struct.pack('<d',-1.5))},
+            {'address':DATA+128,'bytes':list(struct.pack('<d' if mnemonic=='fcom' else '<f',2.0))}])
+        decoder=cs.Cs(cs.CS_ARCH_X86,cs.CS_MODE_32)
+        point=next(i.address for i in decoder.disasm(image.read(c['entry'],64),c['entry']) if i.mnemonic==mnemonic)
+        c['testCheckpoint']={'eip':point,'fpuStatus':0x7f00,'fpuDepth':1}
+        result=reference(c);expected=result['expected']
+        result['oracle_adjustment']={'reason':'Intel-defined C1=0; seeded after FLD to isolate '+mnemonic,
+            'source':'https://cdrdv2-public.intel.com/812383/253666-sdm-vol-2a.pdf',
+            'raw_fpu_status':expected['fpuStatus'],'raw_eax':expected['registers'][0],'corrected_mask':0x0200}
+        expected['fpuStatus']&=~0x0200;expected['registers'][0]&=~0x0200
+        cases.append(result)
+    return cases+division_cases(image)
 
 
 def real_cases(image):
@@ -224,7 +373,7 @@ def main():
     write_json(ROOT/'build/synthetic-cases.json',{'schema':1,'input_sha256':fixture.sha256,'cases':cases})
     # Fail-closed cases are tested by Node separately from successful references.
     faults=[]
-    for name,code in [('unmapped',1),('unsupported',2),('code_write',4),('indirect_missing',3),('sse_movsd_unsupported',2),('popfd_control_unsupported',2)]:
+    for name,code in [('unmapped',1),('unsupported',2),('code_write',4),('indirect_missing',3),('sse_movsd_unsupported',2),('popfd_control_unsupported',2),('idiv16_unsupported',2),('div8_unsupported',2),('shld16_unsupported',2)]:
         c=case(fixture,name,[STOP+128]);c['expectedFault']=code
         if name=='code_write':
             for region in c['regions']:
@@ -247,6 +396,33 @@ def main():
     c['expectedFault']=2;c['expectedFpuOnFault']={'control':0x037f,'status':0,'depth':0};faults.append(c)
     c=case(fixture,'cpu_features/unknown',[2,0]);c['expectedFault']=2
     c['expectedRegistersOnFault']=[2,0,*c['registers'][2:]];faults.append(c)
+    faults.extend(division_faults(fixture))
+    c=case(fixture,'x87_compare_empty');c['registers'][6]=DATA;c['expectedFault']=2
+    c['expectedEipOnFault']=c['entry'];c['expectedRegistersOnFault']=c['registers'].copy()
+    c['expectedFpuOnFault']={'control':0x037f,'status':0,'depth':0};faults.append(c)
+    c=case(fixture,'x87_abs_empty');c['expectedFault']=2
+    c['expectedEipOnFault']=c['entry'];c['expectedRegistersOnFault']=c['registers'].copy()
+    c['expectedFaultText']='x87 stack underflow';faults.append(c)
+    for name in ('x87_abs_empty','x87_compare_empty'):
+        c=case(fixture,name+'/pending-exception');c['registers'][6]=DATA
+        c['fpuControl']=0x037e;c['fpuStatus']=0x81;c['expectedFault']=2
+        c['expectedEipOnFault']=c['entry'];c['expectedRegistersOnFault']=c['registers'].copy()
+        c['expectedFpuOnFault']={'control':0x037e,'status':0x81,'depth':0}
+        c['expectedFaultText']='pending unmasked x87 exception'
+        c['referenceException']={'engine':'Intel specification; Unicorn only raises pending #MF on explicit WAIT'}
+        faults.append(c)
+    for name in ('shld32_mem','shrd32_mem'):
+        for count in (0,32):
+            for mode in ('unmapped','readonly'):
+                c=case(fixture,f'{name}/{mode}-{count}',flags=0x200ed7,
+                       writes=[{'address':DATA,'bytes':[0xa5]*4}])
+                c['registers'][1]=count;c['registers'][6]=DATA if mode=='readonly' else 0x03fff000
+                if mode=='readonly':
+                    for region in c['regions']:
+                        if region['address']==DATA:region['permissions']=1
+                c['expectedFault']=1;c['expectedEipOnFault']=c['entry']
+                c['expectedFlagsOnFault']=c['eflags'];c['expectedRegistersOnFault']=c['registers'].copy()
+                c['unchangedOnFault']=[{'address':DATA,'bytes':[0xa5]*4}];faults.append(c)
     write_json(ROOT/'build/fault-cases.json',{'schema':1,'cases':faults})
     suites=[{'id':'synthetic','module':'synthetic.js','cases':'synthetic-cases.json','faultCases':'fault-cases.json','input_sha256':fixture.sha256}]
     reports={'synthetic':report}

@@ -113,6 +113,10 @@ async function initializeCase(module, test, image = null) {
   }
   if (test.fpuControl !== undefined) module._set_fpu_control(test.fpuControl);
   if (test.fpuStatus !== undefined) module._set_fpu_status(test.fpuStatus);
+  if (test.testCheckpoint) {
+    if (module._run(100, test.testCheckpoint.eip) !== 1 || module._get_fpu_depth() !== test.testCheckpoint.fpuDepth) throw new Error(`${test.id}: authored fixture checkpoint failed`);
+    module._set_fpu_status(test.testCheckpoint.fpuStatus);
+  }
 }
 
 function cpuState(module) {
@@ -156,6 +160,9 @@ function compareCase(module, test, execution) {
     (test.expectedRegistersOnFault || []).forEach((expected, index) => {
       if (execution.cpu.registers[index] !== expected) mismatches.push({field: `registers[${index}]`, expected, actual: execution.cpu.registers[index]});
     });
+    if (test.expectedEipOnFault !== undefined && execution.cpu.eip !== test.expectedEipOnFault) mismatches.push({field: "faultEip", expected: test.expectedEipOnFault, actual: execution.cpu.eip});
+    if (test.expectedFlagsOnFault !== undefined && execution.cpu.eflags !== test.expectedFlagsOnFault) mismatches.push({field: "faultFlags", expected: test.expectedFlagsOnFault, actual: execution.cpu.eflags});
+    if (test.expectedFaultText && !execution.fault.message.includes(test.expectedFaultText)) mismatches.push({field: "faultReason", expected: test.expectedFaultText, actual: execution.fault.message});
     return mismatches;
   }
   const expected = test.expected;

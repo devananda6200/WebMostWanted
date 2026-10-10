@@ -129,6 +129,32 @@ inline uint32_t multiply(uint32_t a,uint32_t b,unsigned bits) {
     uint32_t result=uint32_t(value)&mask(bits);
     flags=(flags&~(CF|OF))|(sign(result,bits)!=value ? CF|OF:0); return result;
 }
+inline void divide32(uint32_t operand,bool signed_operation) {
+    if(error)return; // Preserve a preceding divisor-memory fault.
+    if(!operand) { fault(2,ip,"divide by zero requires guest #DE delivery");return; }
+    if(signed_operation) {
+        // Multiplication constructs the signed pair without shifting a negative
+        // value or converting an out-of-range uint64_t to signed C++.
+        int64_t dividend=sign(r[2],32)*4294967296LL+int64_t(r[0]);
+        int64_t divisor=sign(operand,32);
+        if(dividend==std::numeric_limits<int64_t>::min() && divisor==-1) {
+            fault(2,ip,"signed divide quotient overflow requires guest #DE delivery");return;
+        }
+        int64_t quotient=dividend/divisor;
+        if(quotient<INT32_MIN || quotient>INT32_MAX) {
+            fault(2,ip,"signed divide quotient overflow requires guest #DE delivery");return;
+        }
+        r[0]=uint32_t(quotient);r[2]=uint32_t(dividend%divisor);
+    } else {
+        uint64_t dividend=(uint64_t(r[2])<<32)|r[0];
+        uint64_t quotient=dividend/operand;
+        if(quotient>UINT32_MAX) {
+            fault(2,ip,"unsigned divide quotient overflow requires guest #DE delivery");return;
+        }
+        r[0]=uint32_t(quotient);r[2]=uint32_t(dividend%operand);
+    }
+    // CF/PF/AF/ZF/SF/OF are undefined for DIV/IDIV; keep their previous bits.
+}
 inline uint32_t shift(uint32_t value,uint32_t count,unsigned bits,unsigned kind) {
     count &= 31; value &= mask(bits); if (!count) return value;
     if (count>bits) { fault(2,ip,"shift count exceeds supported operand width"); return value; }
@@ -137,6 +163,16 @@ inline uint32_t shift(uint32_t value,uint32_t count,unsigned bits,unsigned kind)
     if (kind==1) { carry=(value>>(count-1))&1; result=uint32_t(uint64_t(value)>>count); overflow=value>>(bits-1); }
     if (kind==2) { carry=(value>>(count-1))&1; result=uint32_t(sign(value,bits)>>count)&mask(bits); }
     flags=(flags&~(CF|PF|ZF|SF|(count==1?OF:0)))|szp(result,bits)|(carry?CF:0)|(count==1&&overflow?OF:0);
+    return result;
+}
+inline uint32_t double_shift32(uint32_t value,uint32_t source,uint32_t count,bool right) {
+    count&=31;if(!count || error)return value;
+    uint32_t result=right ? (value>>count)|(source<<(32-count))
+                          : (value<<count)|(source>>(32-count));
+    uint32_t carry=right ? (value>>(count-1))&1u : (value>>(32-count))&1u;
+    uint32_t changed=CF|PF|ZF|SF|(count==1?OF:0);
+    flags=(flags&~changed)|szp(result,32)|(carry?CF:0)
+        |(count==1 && ((value^result)&0x80000000u)?OF:0);
     return result;
 }
 inline bool condition(unsigned c) {
@@ -182,6 +218,19 @@ inline void fpop() {
     for(unsigned i=1;i<fpu_depth;++i) fpu[i-1]=fpu[i]; --fpu_depth;
     fpu_status=(fpu_status&~0x3800u)|((((fpu_status>>11)+1u)&7u)<<11);
 }
+inline void fabsolute() {
+    fwait();if(error)return;
+    if(!fpu_depth) { fault(2,ip,"x87 stack underflow");return; }
+    fpu[0]=std::fabs(fpu[0]);fpu_status&=~0x0200u;
+}
+inline void fcompare(double source,bool pop_value) {
+    fwait();if(error)return;
+    if(!fpu_depth) { fault(2,ip,"x87 stack underflow");return; }
+    // All admitted stack values and memory inputs are finite exact loads.
+    // NaN/denormal exception behavior is rejected by fload, never approximated.
+    fpu_status=(fpu_status&~0x4700u)|(fpu[0]<source?0x0100u:fpu[0]==source?0x4000u:0);
+    if(pop_value)fpop();
+}
 // Control words are real guest state. Only finite, normal/zero exact loads and
 // stores are supported: rounding/denormal/NaN exception behavior must not be
 // silently inherited from the Wasm host's double operations.
@@ -210,6 +259,7 @@ inline void fstore(uint32_t address,unsigned bits) {
         wr(address,as_bits(value),32);
     }
     else { uint64_t value;std::memcpy(&value,&fpu[0],8);wr(address,uint32_t(value),32);wr(address+4,uint32_t(value>>32),32); }
+    if(!error)fpu_status&=~0x0200u; // Exact store did not round upward.
 }
 } // namespace guest
 

@@ -18,6 +18,7 @@ constexpr uint32_t INVALID_PARAMETER=87, INVALID_HANDLE=6, NOT_ENOUGH_MEMORY=8;
 constexpr uint32_t MODULE_NOT_FOUND=126, PROCEDURE_NOT_FOUND=127;
 constexpr uint32_t INSUFFICIENT_BUFFER=122, ACP=1252, WC_NO_BEST_FIT_CHARS=0x400;
 constexpr uint32_t HEAP_NO_SERIALIZE=1, HEAP_GENERATE_EXCEPTIONS=4, HEAP_ZERO_MEMORY=8;
+constexpr uint32_t HEAP_REALLOC_IN_PLACE_ONLY=0x10;
 constexpr uint32_t HEAP_CREATE_ENABLE_EXECUTE=0x40000;
 constexpr uint32_t HEAP_HANDLE_BASE=0x70000000u;
 struct Heap { bool active=false; bool fixed=false; uint32_t maximum=0, committed=0; };
@@ -484,6 +485,73 @@ inline uint32_t heap_free(uint32_t handle,uint32_t options,uint32_t address) {
     }
     last_error=INVALID_PARAMETER; return 0;
 }
+inline bool extend_heap_at(uint32_t index,uint32_t address,uint32_t needed) {
+    uint32_t bytes=(needed+guest::PAGE-1)&~(guest::PAGE-1);
+    if(address%guest::PAGE || address<ARENA_BEGIN || uint64_t(address)+bytes>ARENA_END ||
+       uint64_t(heaps[index].committed)+bytes>heaps[index].maximum) return false;
+    uint32_t first=(address-ARENA_BEGIN)/guest::PAGE, count=bytes/guest::PAGE;
+    for(uint32_t page=first;page<first+count;++page)
+        if(owners[page] || guest::permissions[ARENA_BEGIN/guest::PAGE+page]) return false;
+    // All pages were checked before committing any. Existing mappings stay intact.
+    for(uint32_t page=first;page<first+count;++page) {
+        owners[page]=index+1;guest::permissions[ARENA_BEGIN/guest::PAGE+page]=3;
+    }
+    std::memset(guest::memory+address,0,bytes);
+    blocks.push_back({address,bytes,index,0,false});heaps[index].committed+=bytes;
+    coalesce();return true;
+}
+inline uint32_t heap_realloc(uint32_t handle,uint32_t options,uint32_t address,uint32_t requested) {
+    if(options&HEAP_GENERATE_EXCEPTIONS) {
+        guest::fault(5,guest::ip,"HeapReAlloc HEAP_GENERATE_EXCEPTIONS requires guest SEH");return 0;
+    }
+    uint32_t index=heap_index(handle);
+    if(index==0xffffffffu || options&~(HEAP_NO_SERIALIZE|HEAP_ZERO_MEMORY|HEAP_REALLOC_IN_PLACE_ONLY) ||
+       !address || requested>ARENA_END-ARENA_BEGIN || (heaps[index].fixed && requested>=0x7fff8) ||
+       !heap_validate(handle,0,0)) return 0;
+    size_t current=blocks.size();
+    for(size_t i=0;i<blocks.size();++i)
+        if(blocks[i].heap==index && blocks[i].used && blocks[i].address==address) { current=i;break; }
+    if(current==blocks.size()) return 0;
+    const Block original=blocks[current];
+    uint32_t needed=(std::max(requested,1u)+7)&~7u;
+    uint32_t available=original.size;
+    for(const Block& block:blocks)
+        if(block.heap==index && !block.used && block.address==address+original.size) available+=block.size;
+    if(needed>available && extend_heap_at(index,address+available,needed-available)) {
+        // Coalescing may reorder records, so reacquire indices below.
+        available=needed;
+    }
+    if(needed>available) {
+        if(options&HEAP_REALLOC_IN_PLACE_ONLY) return 0;
+        // Keep the original allocation live until the replacement is available.
+        uint32_t replacement=heap_alloc(handle,options&HEAP_NO_SERIALIZE,requested);
+        if(!replacement) return 0;
+        std::memcpy(guest::memory+replacement,guest::memory+address,std::min(original.requested,requested));
+        if((options&HEAP_ZERO_MEMORY) && requested>original.requested)
+            std::memset(guest::memory+replacement+original.requested,0,requested-original.requested);
+        for(Block& block:blocks) if(block.heap==index && block.used && block.address==address) {
+            block.used=false;block.requested=0;break;
+        }
+        coalesce();return replacement;
+    }
+    for(size_t i=0;i<blocks.size();++i)
+        if(blocks[i].heap==index && blocks[i].used && blocks[i].address==address) { current=i;break; }
+    blocks[current]={address,needed,index,requested,true};
+    if(needed<original.size) {
+        blocks.push_back({address+needed,original.size-needed,index,0,false});coalesce();
+    } else if(needed>original.size) {
+        uint32_t consumed=needed-original.size;
+        for(size_t i=0;i<blocks.size();++i) if(blocks[i].heap==index && !blocks[i].used &&
+            blocks[i].address==address+original.size) {
+            blocks[i].address+=consumed;blocks[i].size-=consumed;
+            if(!blocks[i].size) blocks.erase(blocks.begin()+i);
+            break;
+        }
+    }
+    if((options&HEAP_ZERO_MEMORY) && requested>original.requested)
+        std::memset(guest::memory+address+original.requested,0,requested-original.requested);
+    return address;
+}
 inline uint32_t heap_destroy(uint32_t handle) {
     uint32_t index=heap_index(handle);
     if(index==0xffffffffu || handle==process_heap) { last_error=INVALID_HANDLE; return 0; }
@@ -591,7 +659,7 @@ inline int argument_count(const char* name) {
        !std::strcmp(name,"GetTickCount")) return 0;
     if(!std::strcmp(name,"WideCharToMultiByte")) return 8;
     if(!std::strcmp(name,"MultiByteToWideChar") || !std::strcmp(name,"LCMapStringW")) return 6;
-    if(!std::strcmp(name,"GetStringTypeW")) return 4;
+    if(!std::strcmp(name,"GetStringTypeW") || !std::strcmp(name,"HeapReAlloc")) return 4;
     return -1;
 }
 inline bool supports(const char* qualified) {
@@ -773,6 +841,7 @@ inline uint32_t proc_address(uint32_t handle,uint32_t address) {
         result=critical_operation(name,args[0]);has_result=!std::strcmp(name,"TryEnterCriticalSection");
     } else if(!std::strcmp(name,"HeapCreate")) result=heap_create(args[0],args[1],args[2]);
     else if(!std::strcmp(name,"HeapAlloc")) result=heap_alloc(args[0],args[1],args[2]);
+    else if(!std::strcmp(name,"HeapReAlloc")) result=heap_realloc(args[0],args[1],args[2],args[3]);
     else if(!std::strcmp(name,"HeapFree")) result=heap_free(args[0],args[1],args[2]);
     else if(!std::strcmp(name,"HeapSize")) result=heap_size(args[0],args[1],args[2]);
     else if(!std::strcmp(name,"HeapValidate")) result=heap_validate(args[0],args[1],args[2]);

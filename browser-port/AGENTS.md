@@ -27,3 +27,8 @@ assumed tests package. Reload browser after rebuild; restart server for new file
 prefix suite and its Wasm hash. Generated dispatch uses small page functions;
 keep the per-instruction transaction in the outer loop. Win32 state models
 one guest thread only; new threads must fail until scheduling is implemented.
+`python -m tools.seed_initializers --count 64` adds bounded audited constructor
+targets only after a matching untranslated-target fault. It does not execute or
+skip constructors. Current startup defaults: 24,000 instructions / 2M dispatches.
+Controlled CPU-state injection belongs only to authored synthetic fixtures,
+never the original startup/race case. Preserve named oracle discrepancies.

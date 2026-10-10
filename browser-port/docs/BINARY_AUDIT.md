@@ -176,8 +176,9 @@ helpers and API references:
    `[0x008eb168,0x008eb180)` has six slots and five nonzero targets. Table
    `[0x008ea000,0x008eb164)` has 1,113 slots and 870 distinct nonzero targets.
    Callback slot `0x0090623c` initially points to `0x007c4360`. These callbacks
-   have not been translated or dynamically validated; skipping them is not a
-   justified initialization shortcut. The earlier `0x007cce50` helper uses equal
+   were unexecuted at the initial static audit. Subsequent bounded translation
+   executes the early constructors; current progress is in VERIFIED_STATUS.md.
+   Skipping them is not a justified initialization shortcut. The earlier `0x007cce50` helper uses equal
    initial range bounds `0x008c8738`, so that particular range is empty.
 7. At `0x007c41be`, a three-argument call to `0x00666590`. This resembles a
    C `main` boundary; calling it `WinMain` would be an unsupported assumption.
@@ -200,3 +201,11 @@ targets remain unverified. No startup, menu, initialized race or gameplay result
 is claimed by the audit. The shortest legitimate path currently supported by
 evidence is to preserve normal CRT/application initialization and trace its
 first failures; a direct quick-race jump has not been justified.
+
+Later controlled startup observes the declared CPU profile's ordinary non-SSE2
+CRT branch, five error-returning initializers, security-cookie setup using real
+clock sources, and early game constructors. Exact instruction barriers include
+IDIV at `0x00464f34`, SHLD at `0x0045216e`, and FABS/FCOMP at `0x00885646` /
+`0x00885648`. Their translation tests and known reference-emulator defects are
+documented in [ARCHITECTURE.md](ARCHITECTURE.md). These observations do not
+identify a race entry or prove full application initialization.

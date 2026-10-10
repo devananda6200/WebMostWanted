@@ -212,6 +212,10 @@ class Emitter:
             return f"uint64_t v={expr};r[0]=uint32_t(v);r[2]=uint32_t(v>>32);flags=(flags&~(CF|OF))|({condition}?CF|OF:0);"
         if m == "cdq":
             return "r[2]=(r[0]&0x80000000u)?0xffffffffu:0u;"
+        if m in ("shld", "shrd") and len(o)==3 and o[0].size==4 and o[1].size==4:
+            return self.write(o[0], f"double_shift32({self.read(o[0])},{self.read(o[1])},{self.read(o[2])},{'true' if m=='shrd' else 'false'})")
+        if m in ("div", "idiv") and len(o) == 1 and o[0].size == 4:
+            return f"divide32({self.read(o[0])},{'true' if m=='idiv' else 'false'});"
         if m == "cwde":
             return "r[0]=uint32_t(sign(r[0],16));"
         if m in ("cld", "std", "clc", "stc", "cmc"):
@@ -247,6 +251,10 @@ class Emitter:
             return self.write_lane(o[0],0,f"as_bits(float(sign({self.read(o[1])},32)))")
         if m in ("wait", "fwait"):
             return "fwait();"
+        if m == "fabs":
+            return "fabsolute();"
+        if m in ("fcom", "fcomp") and len(o)==1 and o[0].type==X86_OP_MEM and o[0].size in (4,8):
+            return f"fcompare(fload({self.address(o[0])},{o[0].size*8}),{'true' if m=='fcomp' else 'false'});"
         if m == "fninit":
             return "finit();"
         if m == "fnclex":

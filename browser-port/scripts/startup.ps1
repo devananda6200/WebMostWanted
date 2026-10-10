@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([int]$Limit = 8000, [string[]]$Seed = @(), [switch]$FromTrace, [int]$MaxSteps = 2000000)
+param([int]$Limit = 24000, [string[]]$Seed = @(), [switch]$FromTrace, [int]$MaxSteps = 2000000)
 $ErrorActionPreference = 'Stop'
 $portRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $portRoot

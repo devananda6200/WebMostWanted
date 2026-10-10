@@ -43,16 +43,23 @@ def main():
                 expected = [{key: c[key] for key in fields} for c in bestfit]
                 matched = matched and observed["bestfit_observations"] == expected
                 comparison.update(status="passed" if matched else "failed", bestfit_cases=8)
+    heap_reference_path = ROOT / "artifacts/heap-realloc-reference.json"
+    heap_comparison = {"status": "unverified", "reason": "Optional authored native heap probe has not been captured."}
+    if observed and heap_reference_path.exists():
+        heap_reference = json.loads(heap_reference_path.read_text(encoding="utf-8"))
+        heap_comparison = {"status": "passed" if observed.get("heap_realloc_observations") == heap_reference["cases"] else "failed",
+                           "compared_cases": len(heap_reference["cases"]), "reference_sha256": sha256(heap_reference_path),
+                           "windows": heap_reference["windows"], "scope": heap_reference["scope"]}
     report = {"captured_at_utc": datetime.now(timezone.utc).isoformat(), "command": command,
               "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr,
               "wasm_sha256": sha256(output.with_suffix(".wasm")),
               "scope": "API contract tests in Node Wasm with optional native NLS repertoire comparison",
-              "native_nls_comparison": comparison}
+              "native_nls_comparison": comparison, "native_heap_realloc_comparison": heap_comparison}
     path = ROOT / "artifacts/win32-contract-tests.json"
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if observed:
         print(json.dumps({"status": observed["status"], "groups": observed["groups"],
-                          "native_nls_comparison": comparison}))
+                          "native_nls_comparison": comparison, "native_heap_realloc_comparison": heap_comparison}))
     else:
         print(result.stdout, end="")
     if result.returncode:
@@ -60,6 +67,8 @@ def main():
         raise SystemExit(result.returncode)
     if comparison["status"] == "failed":
         raise SystemExit("Wasm NLS repertoire differs from the captured native reference")
+    if heap_comparison["status"] == "failed":
+        raise SystemExit("Wasm HeapReAlloc observations differ from the captured native reference")
     print(f"Evidence: {path}")
 
 

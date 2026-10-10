@@ -1,4 +1,5 @@
 #include "runtime/win32.hpp"
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <initializer_list>
@@ -11,6 +12,8 @@ static uint32_t tick_first,tick_last,tick_samples;
 static double tick_elapsed_ms;
 struct BestFitObservation { uint32_t result,used,error; uint8_t output[16]; };
 static BestFitObservation observed_bestfit[8];
+struct ReallocObservation { uint32_t initial,flags,requested,size,error; uint8_t bytes[15]; };
+static ReallocObservation observed_realloc[4];
 static uint32_t invoke(const char* name,std::initializer_list<uint32_t> args={}) {
     guest::r[4]=SP; guest::wr(SP,RETURN,32);
     uint32_t p=SP+4; for(uint32_t value:args) { guest::wr(p,value,32);p+=4; }
@@ -663,6 +666,114 @@ static void tick_clock_rollover() {
     }
     ++tests;
 }
+static uint32_t checked_realloc(uint32_t heap,uint32_t options,uint32_t address,uint32_t requested) {
+    guest::flags=0xa47;win32::last_error=777;
+    guest::r[3]=0x11112222;guest::r[5]=0x33334444;guest::r[6]=0x55556666;guest::r[7]=0x77778888;
+    uint32_t result=invoke("HeapReAlloc",{heap,options,address,requested});
+    assert(guest::r[4]==SP+20 && guest::flags==0xa47 && win32::last_error==777);
+    assert(guest::r[3]==0x11112222 && guest::r[5]==0x33334444 && guest::r[6]==0x55556666 && guest::r[7]==0x77778888);
+    return result;
+}
+static void heap_reallocation_contract() {
+    unsigned sample=0;
+    for(auto pair:{std::pair<uint32_t,uint32_t>{0,0},{8,0},{8,15},{8,9}}) {
+        fresh();uint32_t heap=invoke("HeapCreate",{0,65536,65536});
+        uint32_t block=invoke("HeapAlloc",{heap,0,13});std::memset(guest::memory+block,0xa5,13);
+        uint32_t replacement=checked_realloc(heap,pair.first,block,pair.second);assert(replacement);
+        auto& observed=observed_realloc[sample++];observed.initial=13;observed.flags=pair.first;
+        observed.requested=pair.second;observed.error=win32::last_error;
+        observed.size=invoke("HeapSize",{heap,0,replacement});assert(observed.size==pair.second);
+        for(unsigned i=0;i<pair.second;++i) {
+            observed.bytes[i]=guest::memory[replacement+i];
+            assert(observed.bytes[i]==(i<13?0xa5:0));
+        }
+        assert(invoke("HeapValidate",{heap,0,0}));
+        assert(invoke("HeapFree",{heap,0,replacement}));
+    }
+    fresh();uint32_t heap=invoke("HeapCreate",{0,4096,4096});
+    uint32_t block=invoke("HeapAlloc",{heap,0,13});std::memset(guest::memory+block,0xa5,16);
+    assert(checked_realloc(heap,8,block,15)==block);
+    assert(guest::memory[block+12]==0xa5 && !guest::memory[block+13] && !guest::memory[block+14]);
+    assert(guest::memory[block+15]==0xa5); // Allocation padding was not requested.
+    assert(checked_realloc(heap,8,block,9)==block);
+    for(unsigned i=0;i<9;++i) assert(guest::memory[block+i]==0xa5);
+    assert(checked_realloc(heap,8,block,9)==block);
+    assert(checked_realloc(heap,0,block,0)==block && invoke("HeapSize",{heap,0,block})==0);
+    assert(checked_realloc(heap,8,block,7)==block);
+    for(unsigned i=0;i<7;++i) assert(!guest::memory[block+i]);
+    assert(invoke("HeapValidate",{heap,0,0}));++tests;
+}
+static void heap_reallocation_adjacent_and_coalescing() {
+    fresh();uint32_t heap=invoke("HeapCreate",{0,4096,4096});
+    uint32_t a=invoke("HeapAlloc",{heap,0,32}),b=invoke("HeapAlloc",{heap,0,48}),c=invoke("HeapAlloc",{heap,0,16});
+    std::memset(guest::memory+a,0xa5,32);std::memset(guest::memory+b,0xb6,48);std::memset(guest::memory+c,0xc7,16);
+    assert(invoke("HeapFree",{heap,0,b}));
+    assert(checked_realloc(heap,0x18,a,72)==a);
+    for(unsigned i=0;i<72;++i) assert(guest::memory[a+i]==(i<32?0xa5:0));
+    for(unsigned i=0;i<16;++i) assert(guest::memory[c+i]==0xc7);
+    assert(checked_realloc(heap,0x11,a,24)==a);
+    uint32_t combined=invoke("HeapAlloc",{heap,0,56});assert(combined==a+24);
+    assert(invoke("HeapValidate",{heap,0,0}));
+    assert(invoke("HeapFree",{heap,0,combined}));assert(invoke("HeapFree",{heap,0,a}));assert(invoke("HeapFree",{heap,0,c}));
+    assert(invoke("HeapAlloc",{heap,0,4096})==a);++tests;
+}
+static void heap_reallocation_movement() {
+    fresh();uint32_t heap=invoke("HeapCreate",{0,4096,4096});
+    std::memset(guest::memory+win32::ARENA_BEGIN,0xc7,4096);
+    uint32_t a=invoke("HeapAlloc",{heap,0,32}),b=invoke("HeapAlloc",{heap,0,32});
+    std::memset(guest::memory+a,0xa5,32);std::memset(guest::memory+b,0xb6,32);
+    assert(!checked_realloc(heap,0x10,a,292));assert(invoke("HeapSize",{heap,0,a})==32);
+    for(unsigned i=0;i<32;++i) assert(guest::memory[a+i]==0xa5);
+    uint32_t moved=checked_realloc(heap,8,a,292);assert(moved && moved!=a && !(moved&7));
+    for(unsigned i=0;i<292;++i) assert(guest::memory[moved+i]==(i<32?0xa5:0));
+    for(unsigned i=292;i<296;++i) assert(guest::memory[moved+i]==0xc7);
+    for(unsigned i=0;i<32;++i) assert(guest::memory[b+i]==0xb6);
+    assert(invoke("HeapSize",{heap,0,a})==0xffffffffu && !invoke("HeapValidate",{heap,0,a}));
+    assert(invoke("HeapAlloc",{heap,0,32})==a);
+    assert(invoke("HeapSize",{heap,0,moved})==292 && invoke("HeapValidate",{heap,0,0}));++tests;
+}
+static void heap_reallocation_page_growth() {
+    fresh();uint32_t heap=invoke("HeapCreate",{0,4096,8192});
+    uint32_t a=invoke("HeapAlloc",{heap,0,4096});std::memset(guest::memory+a,0xa5,4096);
+    assert(checked_realloc(heap,0x18,a,6000)==a);
+    for(unsigned i=0;i<6000;++i) assert(guest::memory[a+i]==(i<4096?0xa5:0));
+    assert(win32::heaps[win32::heap_index(heap)].committed==8192);
+    assert(invoke("HeapValidate",{heap,0,0}));
+    assert(!checked_realloc(heap,0,a,9000));assert(invoke("HeapSize",{heap,0,a})==6000);
+    for(unsigned i=0;i<6000;++i) assert(guest::memory[a+i]==(i<4096?0xa5:0));
+    fresh();heap=invoke("HeapCreate",{0,4096,8192});a=invoke("HeapAlloc",{heap,0,4096});
+    assert(map_region(a+4096,4096,3));guest::wr(a+4096,0xdeadbeef,32);
+    assert(!checked_realloc(heap,0x10,a,6000));assert(guest::rd(a+4096,32)==0xdeadbeef);
+    assert(!win32::owners[(a+4096-win32::ARENA_BEGIN)/guest::PAGE]);
+    assert(win32::heaps[win32::heap_index(heap)].committed==4096);
+    assert(invoke("HeapValidate",{heap,0,0}));++tests;
+}
+static void heap_reallocation_failures() {
+    fresh();uint32_t heap=invoke("HeapCreate",{0,4096,4096});
+    uint32_t a=invoke("HeapAlloc",{heap,0,2048}),b=invoke("HeapAlloc",{heap,0,2048});
+    std::memset(guest::memory+a,0xa5,2048);
+    uint32_t other=invoke("HeapCreate",{0,0,0});
+    for(auto args:{std::array<uint32_t,4>{heap,0,a,3000},{heap,0x10,a,3000},
+                  {heap,0,a,0xffffffffu},{heap,0,a,0x7fff8},{heap,2,a,2048},
+                  {heap,0,0,2048},{heap,0,a+8,2048},{0,0,a,2048},{other,0,a,2048}}) {
+        assert(!checked_realloc(args[0],args[1],args[2],args[3]));
+        assert(invoke("HeapSize",{heap,0,a})==2048);
+        for(unsigned i=0;i<2048;++i) assert(guest::memory[a+i]==0xa5);
+        assert(invoke("HeapValidate",{heap,0,0}));
+    }
+    assert(invoke("HeapFree",{heap,0,b}));assert(!checked_realloc(heap,0,b,32));
+    uint32_t owner=win32::owners[0];win32::owners[0]=owner+1;
+    assert(!checked_realloc(heap,0,a,2048));win32::owners[0]=owner;
+    assert(invoke("HeapSize",{heap,0,a})==2048);
+    guest::r[4]=SP;guest::wr(SP,RETURN,32);
+    guest::wr(SP+4,heap,32);guest::wr(SP+8,4,32);guest::wr(SP+12,a,32);guest::wr(SP+16,3000,32);
+    win32::last_error=777;uint32_t next=0xfeedbeef;
+    assert(win32::dispatch("HeapReAlloc",next));
+    assert(guest::error==5 && std::strstr(guest::error_text,"requires guest SEH"));
+    assert(guest::r[4]==SP && next==0xfeedbeef && win32::last_error==777);
+    for(unsigned i=0;i<2048;++i) assert(guest::memory[a+i]==0xa5);
+    assert(win32::heap_size(heap,0,a)==2048);++tests;
+}
 int main() {
     version_contract();heap_contract();heap_growth_and_limits();tls_contract();clock_contract();failures_do_not_succeed();
     module_registry_contract();critical_section_contract();startup_information_contract();
@@ -676,6 +787,8 @@ int main() {
     processor_feature_contract();
     exception_filter_registration_contract();
     tick_clock_contract();tick_clock_rollover();
+    heap_reallocation_contract();heap_reallocation_adjacent_and_coalescing();heap_reallocation_movement();
+    heap_reallocation_page_growth();heap_reallocation_failures();
     std::printf("{\"status\":\"passed\",\"groups\":%u,\"scope\":\"Win32 contract tests in Wasm\",\"cp1252_decode\":[",tests);
     for(unsigned i=0;i<256;++i) std::printf("%s%u",i?",":"",observed_decode[i]);
     std::printf("],\"ctype1\":[");
@@ -691,6 +804,14 @@ int main() {
         for(uint8_t byte:o.output) std::printf("%02x",byte);
         std::printf("\"}");
     }
-    std::printf("],\"tick_clock\":{\"first_ms\":%u,\"last_ms\":%u,\"samples\":%u,\"observed_elapsed_ms\":%.3f}}\n",
+    std::printf("],\"tick_clock\":{\"first_ms\":%u,\"last_ms\":%u,\"samples\":%u,\"observed_elapsed_ms\":%.3f},\"heap_realloc_observations\":[",
                 tick_first,tick_last,tick_samples,tick_elapsed_ms);
+    for(unsigned i=0;i<4;++i) {
+        const auto& o=observed_realloc[i];
+        std::printf("%s{\"initial_size\":%u,\"flags\":%u,\"requested\":%u,\"returned_nonnull\":true,\"reported_size\":%u,\"last_error\":%u,\"bytes\":[",
+                    i?",":"",o.initial,o.flags,o.requested,o.size,o.error);
+        for(unsigned j=0;j<o.requested;++j) std::printf("%s%u",j?",":"",o.bytes[j]);
+        std::printf("]}");
+    }
+    std::printf("]}\n");
 }

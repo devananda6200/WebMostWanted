@@ -1,12 +1,12 @@
 # Verified status
 
-Checkpoint: 2026-10-11T01:47:07+05:30. Highest completed milestone: **M1**.
+Checkpoint: 2026-10-11T02:15:04+05:30. Highest completed milestone: **M1**.
 
 | Milestone | State | Evidence / limitation |
 | --- | --- | --- |
 | M0 audit/environment | Tested | 1,363 files / 3,025,210,311 bytes; five PE identities; portable Windows SDK |
-| M1 binary translation | Tested, limited subset | 662 synthetic + 38 real routine + 1 original entry prefix + 11 expected faults: **712/712** in Node/browser |
-| M2 translated initialization | Implemented / Built / Tested partially / Failing | 1,166,682 dispatches from original entry into game constructors, then unsupported IDIV |
+| M1 binary translation | Tested, limited subset | 1,317 synthetic + 38 real routine + 1 original entry prefix + 46 expected faults: **1,402/1,402** in Node/browser; named oracle corrections below |
+| M2 translated initialization | Implemented / Built / Tested partially / Failing | 1,765,180 dispatches from original entry into game constructors, then unsupported FSUB |
 | M3 menu or initialized race | Proposed / Unverified | No authentic game frame or menu |
 | M4 original driving | Proposed / Unverified | Worker input only; no vehicle simulation |
 | M5 complete race/results | Proposed / Unverified | **Zero complete races demonstrated** |
@@ -17,21 +17,23 @@ Checkpoint: 2026-10-11T01:47:07+05:30. Highest completed milestone: **M1**.
 - `scripts/build.ps1`: assembly -> COFF -> PE32 binary -> generated C++ -> Wasm,
   actual game routine, and original entry-prefix reference. Fixture source is
   never compiled directly to Wasm for the binary-translation proof.
-- `scripts/test.ps1`: 37 Python tests, 712 Node binary cases, exact 34-instruction
-  entry-prefix trace/register/flags/memory comparison, and 28 Win32 Wasm groups.
+- `scripts/test.ps1`: 54 Python tests, 1,402 Node binary cases, exact 34-instruction
+  entry-prefix trace/register/flags/memory comparison, and 33 Win32 Wasm groups.
 - `tools.win32_nls_reference`: 2,048 CP1252 decode/classification/casing values
   and eight best-fit conversion cases match trusted native system APIs.
   Windows build 26300 is not a historical XP oracle.
-- Browser: 712/712, approximately 4.30 seconds including worker scheduling.
+- `tools.win32_heap_reference`: four trusted native private-heap reallocation
+  observations match Wasm. Source is authored; no native game code is executed.
+- Browser: 1,402/1,402, approximately 8.54 seconds including worker scheduling.
   Wasm and PE-image hashes checked before execution.
-  Earlier repeated 681-case runs reached the same previous CRT barrier; the
-  current 712-case artifact has one exported constructor checkpoint.
+  Earlier runs reached their previous CRT/constructor barriers; the current
+  1,402-case artifact has one exported FSUB constructor checkpoint.
   These diagnostic checks are not race-launch reliability.
-- Browser startup: 1,166,682 dispatches, approximately 701.6 ms, then fault 2 at
-  `0x00464f34`, `idiv dword ptr [esp + 0x28]`. Node reaches the same barrier
-  in approximately 200.4 ms. These diagnostic timings are not gameplay FPS.
+- Browser startup: 1,765,180 dispatches, approximately 1,271.3 ms, then fault 2 at
+  `0x0088585b`, `fsub dword ptr [0x8ee6b8]`. Node reaches the same barrier
+  in approximately 747.3 ms. These diagnostic timings are not gameplay FPS.
   Dispatches include gateways/repeated string iterations; the build contains
-  8,000 distinct original instructions. Neither count proves completed startup.
+  32,000 distinct original instructions. Neither count proves completed startup.
   Five error-returning CRT initializers and the early void/game constructors
   execute normally, including original registry/hash code and a heap fill.
 - Secure context, worker/Wasm, isolation, SharedArrayBuffer availability, AMD
@@ -61,8 +63,14 @@ guest file continuations, D3D9, audio, threads, full x87 and race flow are unver
 - `artifacts/browser-crt-10126-repeat.json`
 - `artifacts/browser-crt-17689.json` (intermediate best-fit conversion barrier)
 - `artifacts/browser-constructors.json`, `browser-constructors.jpg`
+- `artifacts/browser-division.json`, `browser-arithmetic.json`
+- `artifacts/browser-heap-realloc.json`, `heap-realloc-reference.json`
+- `artifacts/wasm-tests-x87-oracle-failure.json`
 - `artifacts/initializer-analysis.json`, `cpuid-profile-analysis.json`
 - `artifacts/bounded-constructor-seeds.json`
+- `artifacts/constructor-batch-2.json`, `constructor-batch-3.json`, `constructor-batch-4.json`
+- `artifacts/initializer-seeds.json` (latest bounded table selection)
+- `artifacts/constructor-vtables.json` (read-only target review)
 - `artifacts/startup-node.json`, `startup-history.jsonl`, `startup-build.json`
 - `generated/*.json` coverage; `generated/startup-seeds.json` retained local seeds
 
@@ -89,3 +97,17 @@ rounded stores, denormals and exception delivery still fail explicitly.
 Increasing the bounded translation set from 6,000 to 8,000 restored entry
 coverage after adding constructor targets. Raising the dispatch budget from
 one to two million let the observed finite REP STOSD fill finish normally.
+
+DIV/IDIV, SHLD/SHRD, finite FABS/FCOM/FCOMP, exact-store C1 clearing, and
+HeapReAlloc now pass focused tests. Seventeen initializer-seeding tests cover
+identity, bounds, concurrent changes, and original-file protection. Later bounded
+constructor batches increased coverage to 32,000 instructions; no constructor was
+skipped. The current FSUB operands in original data are 10,000 and 4,000.
+
+Pinned Unicorn 2.1.4 has observed oracle defects. INT64_MIN/-1 crashes its host
+division helper; that overflow has a specification test instead. Pending #MF on
+FABS/FCOMP likewise has two specification tests. Thirty finite x87 cases correct
+Unicorn's stale C1 against Intel's specified clearing behavior; raw EAX/FPSW and
+the named correction remain in case evidence. Three controlled-state checkpoints
+isolate that behavior after FLD. These corrections are not hidden differential
+matches. Full extended-precision arithmetic remains unimplemented.

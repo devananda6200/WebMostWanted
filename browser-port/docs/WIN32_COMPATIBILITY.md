@@ -131,11 +131,12 @@ its gateway executable. Reset removes registrations to prevent stale targets.
   unimplemented required API from masquerading as an optional missing API.
   Guest strings have checked memory access and explicit length bounds.
   [Lookup contract](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getprocaddress), [FLS client availability](https://learn.microsoft.com/en-us/windows/win32/api/fibersapi/nf-fibersapi-flsalloc)
-- `HeapCreate`, `GetProcessHeap`, `HeapAlloc`, `HeapFree`, `HeapSize`, and
+- `HeapCreate`, `GetProcessHeap`, `HeapAlloc`, `HeapReAlloc`, `HeapFree`, `HeapSize`, and
   `HeapDestroy` maintain actual guest allocations in the bounded 9 MiB range
   `0x02600000..0x02f00000`. Page ownership is checked before mapping; existing
   mappings are preserved. Allocations are eight-byte aligned, stable until
-  freed, reused through splitting/coalescing, and zeroed when requested.
+  freed or explicitly resized to a new address, reused through splitting/
+  coalescing, and zeroed when requested.
   Fixed heap limits, invalid handles, and exhaustion produce failure. The
   allocator commits chunks from this arena; it does not reproduce the Windows
   heap's internal bookkeeping or virtual-memory reservation layout.
@@ -154,9 +155,22 @@ its gateway executable. Reset removes registrations to prevent stale targets.
 - Heap allocation and size failures preserve last error, as documented.
   HeapFree accepts NULL and reports invalid/double frees without inventing
   success. Executable heaps and exception-generating allocation modes fault
-  until generated-code handling and guest SEH exist. HeapReAlloc,
-  HeapLock, and HeapUnlock remain unsupported.
+  until generated-code handling and guest SEH exist. HeapLock and HeapUnlock
+  remain unsupported.
   [HeapFree](https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapfree), [HeapSize](https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapsize)
+- `HeapReAlloc` checks the heap's metadata and the exact live allocation before
+  resizing. Shrinking splits and coalesces free space; growth consumes adjacent
+  free space or commits adjacent unowned pages when possible. Without
+  `HEAP_REALLOC_IN_PLACE_ONLY`, it can allocate elsewhere, copy the retained
+  bytes, then release the old block. Allocation failure retains the original
+  pointer, size and contents. `HEAP_ZERO_MEMORY` zeros only newly requested
+  bytes, including growth within allocation padding. Zero size retains a live
+  allocation with requested size zero. Invalid flags, handles and ownership
+  return NULL without changing last error; exception-generating mode faults
+  explicitly. Only flags 0, 1, 8 and 0x10 and their combinations are modeled.
+  Fixed-heap and arena limits still apply. The observed startup call used heap
+  0x70000000, flags 0, guest pointer 0x02600830, and new size 292.
+  [Resize, preservation, flags, and failure contract](https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heaprealloc)
 - `HeapValidate` checks the replacement allocator's actual control structures.
   A non-NULL pointer must identify an exact live allocation: its size, alignment,
   requested-size metadata, page ownership/permissions, and overlapping records
@@ -236,7 +250,7 @@ From `browser-port/`:
 ```
 
 The current command builds `tests/win32_test.cpp` with pinned Emscripten and runs
-it in Node Wasm. Twenty-eight groups passed: version/ABI output; allocation/reuse/zeroing;
+it in Node Wasm. Thirty-three groups passed: version/ABI output; allocation/reuse/zeroing;
 heap growth/limits/reset; TLS/error contracts; actual clocks; invalid pointers,
 unsupported exports/flags and preservation of existing mappings; module/export
 registration with absent-module/FLS responses and bounded strings; and recursive
@@ -274,12 +288,33 @@ uptime across process resets. Authored elapsed inputs verify truncation, the
 2^32 boundary, later rollovers, modular subtraction and invalid-clock faults.
 The report's captured stdout includes actual tick values, sample count and
 elapsed observation time; no real multi-day wait is claimed.
+Five reallocation groups cover zero/same/shrinking sizes, requested-byte versus
+padding zeroing, adjacent free-space growth, coalescing after shrink, movement,
+preserved sibling allocations, in-place page extension, protected mappings,
+full-heap and size-limit failures, invalid/freed/interior/foreign pointers, metadata
+ownership failure, preserved CPU/error state and the explicit SEH-mode barrier.
 The contention test deliberately
 injects another-owner state to verify the scheduling barrier; it does not claim
 that a second guest thread was run.
 Evidence is `artifacts/win32-contract-tests.json`. Most groups are API contract
 tests; the limited NLS repertoire has the native comparison described below.
 These tests are not proof of successful game startup.
+
+An authored local heap probe executes only trusted kernel32 APIs on private
+heap allocations; it does not execute the game. Its four zero-size/grow/shrink
+observations are compared with Wasm return success, reported sizes, last error
+and retained/zeroed bytes by `tools.win32_test`. All four matched the recorded
+host. Historical Windows XP equivalence is unverified. The repeatable source is
+`tools/win32_heap_reference.py`; exact command, Python/Windows/kernel32 identities,
+pointer width and results are retained in ignored
+`artifacts/heap-realloc-reference.json`. The tool requires native Windows,
+checks each allocation result before reading memory, and reports failures
+explicitly. It attempts to release its private heap even if an observation fails.
+Reproduce the native observations with:
+
+```powershell
+.\.venv\Scripts\python.exe -m tools.win32_heap_reference
+```
 
 The authored optional reference probe executes only trusted system NLS APIs on
 isolated in-memory strings:
