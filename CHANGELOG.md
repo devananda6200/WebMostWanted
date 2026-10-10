@@ -4,6 +4,22 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-11T01:11:29+05:30 — verified CRT progress and translation corrections
+
+- Changed: Added process/heap/TLS/lock/startup/NLS contracts, entry-prefix oracle,
+  trace-guided seeds, source/artifact checks, stack/fault history, page-sized AOT
+  dispatch and CPU/memory regressions. Updated browser-port documentation.
+- Why: Advance actual initialization and correct observed silent miscompilation.
+- Validation: 34 Python tests; 681 Node/browser binary cases; 18 Wasm API groups;
+  512 native NLS values passed. Browser reaches 10,126 dispatches and LCMapStringW.
+  Follow-up audit matched original metadata/PE records. Evidence remains ignored.
+- Corrections: MOVSD ambiguity, 16-bit branches, section reads, POPFD reserved
+  flags, indirect stdcall and SIMD rollback; fixed reference SS and build hashes.
+  Two costly optimized compiles cancelled; O0 completed in about 102 seconds;
+  page dispatch reduced a later build to 2.09 seconds. No gameplay FPS claim.
+- Limitations: M1 completed; M2 partial. No menu, initialized race, D3D9, driving,
+  finish/results or replay. Human review pending; XP NLS equivalence unverified.
+
 ## 2026-10-11T00:38:35+05:30 — audit, binary translation proof, and browser host
 
 - Changed: Added browser-port tools, translator/runtime, PE fixture, differential

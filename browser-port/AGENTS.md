@@ -22,3 +22,8 @@ scripts/build.ps1, scripts/test.ps1, scripts/serve.ps1. Startup probe builds wit
 scripts/startup.ps1 and currently fails at a required compatibility barrier.
 Python tests use unittest discovery (`-m unittest discover -s tests`), not an
 assumed tests package. Reload browser after rebuild; restart server for new files.
+`startup.ps1 -FromTrace` reuses only matching local execution evidence. Run
+`python -m tools.startup_reference` after rebuilding startup to refresh the
+prefix suite and its Wasm hash. Generated dispatch uses small page functions;
+keep the per-instruction transaction in the outer loop. Win32 state models
+one guest thread only; new threads must fail until scheduling is implemented.

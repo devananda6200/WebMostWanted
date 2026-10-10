@@ -18,7 +18,8 @@ inline uint32_t error, error_address;
 inline const char* error_text="";
 inline double fpu[8];
 inline uint32_t fpu_depth;
-inline uint32_t trace[64], trace_count;
+constexpr uint32_t TRACE_SIZE=4096;
+inline uint32_t trace[TRACE_SIZE], trace_count;
 struct CpuSnapshot { uint32_t r[8],xmm[8][4],flags; double fpu[8]; uint32_t depth; };
 struct UndoWrite { uint32_t address,value; unsigned bits; };
 inline CpuSnapshot saved;
@@ -76,6 +77,17 @@ inline void wr(uint32_t address, uint32_t value, unsigned bits) {
 }
 inline void push(uint32_t value) { uint32_t sp=r[4]-4; wr(sp,value,32); if (!error) r[4]=sp; }
 inline uint32_t pop() { uint32_t value=rd(r[4],32); if (!error) r[4]+=4; return value; }
+inline void pop_flags() {
+    uint32_t value=pop();
+    if(error)return;
+    // Only ordinary arithmetic/DF restores are modeled. Reserved bits are
+    // ignored; control/debug/privilege changes require a fuller CPU model.
+    constexpr uint32_t controls=0x003f7300u;
+    if((value&controls)!=(flags&controls)) {
+        fault(2,ip,"POPFD control/debug/privilege flag change is not implemented");return;
+    }
+    flags=(value&(ARITH|DF))|(flags&controls)|2u;
+}
 inline uint32_t read_reg(unsigned reg, unsigned bits, unsigned shift=0) { return (r[reg]>>shift)&mask(bits); }
 inline void write_reg(unsigned reg, unsigned bits, unsigned shift, uint32_t value) {
     if(error)return;
@@ -183,8 +195,8 @@ EMSCRIPTEN_KEEPALIVE uint32_t fault_code() { return guest::error; }
 EMSCRIPTEN_KEEPALIVE uint32_t fault_address() { return guest::error_address; }
 EMSCRIPTEN_KEEPALIVE const char* fault_text() { return guest::error_text; }
 EMSCRIPTEN_KEEPALIVE uint32_t get_steps() { return guest::steps; }
-EMSCRIPTEN_KEEPALIVE uint32_t get_trace_count() { return guest::trace_count<64?guest::trace_count:64; }
+EMSCRIPTEN_KEEPALIVE uint32_t get_trace_count() { return guest::trace_count<guest::TRACE_SIZE?guest::trace_count:guest::TRACE_SIZE; }
 EMSCRIPTEN_KEEPALIVE uint32_t get_trace(uint32_t i) {
-    uint32_t n=get_trace_count(); return i<n ? guest::trace[(guest::trace_count-n+i)%64] : 0;
+    uint32_t n=get_trace_count(); return i<n ? guest::trace[(guest::trace_count-n+i)%guest::TRACE_SIZE] : 0;
 }
 }

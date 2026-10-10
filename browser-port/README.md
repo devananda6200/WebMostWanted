@@ -44,12 +44,19 @@ To build and probe the original entry path:
 
 ```powershell
 .\scripts\startup.ps1
+# Incorporate observed executable addresses after an untranslated-target fault:
+.\scripts\startup.ps1 -FromTrace
 ```
 
 This currently returns a nonzero exit code at a required compatibility barrier.
 Read `artifacts/startup-node.json`, then use **Probe translated startup** in the
 browser. Restart the resource server after adding build filenames, and reload
 the browser after every rebuild; the worker verifies Wasm identity hashes.
+The current local seed file is retained in `generated/startup-seeds.json` and is
+bound to the audited executable hash. Each probe appends its source/build
+identity, stack words, bounded trace, and exact reproduction command to
+`artifacts/startup-history.jsonl`. This is a diagnostic build, not a performance
+build or a successful game launch.
 
 ## What the commands actually test
 
@@ -60,11 +67,18 @@ executes identical mapped bytes with isolated inputs and no host syscalls.
 Tests compare general registers, defined flag bits, XMM registers, return
 addresses, and watched input/output/stack memory. The real routine is pinned
 by executable hash, address, size, and routine-byte hash.
+The default build also generates a differential reference for the original
+entry prefix through its first imported call, with an explicit 32-bit FS/TEB
+model. `test.ps1` additionally compiles and runs focused Win32-contract tests;
+those are API tests, separate from the binary-translation proof.
 
 The runtime currently uses a 64 MiB guest address window and an 80 MiB Wasm heap
 per module. It has explicit page permissions, checked accesses, fault rollback,
 bounded dispatch, and diagnostic instruction traces. This is a limited AOT
 translation backend; it is not a complete x86 compiler or Windows emulator.
+The startup module provides a declared XP SP3 single-thread process profile,
+bounded heaps, TLS, locks, process strings, and selected startup APIs. See the
+[actual contracts and limits](docs/WIN32_COMPATIBILITY.md).
 
 The resource server binds only `127.0.0.1`. It exposes selected static mounts,
 GET/HEAD, bounded byte ranges, and read-only game assets, with path containment,

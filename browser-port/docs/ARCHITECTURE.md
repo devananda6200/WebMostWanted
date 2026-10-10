@@ -9,7 +9,7 @@ fault. No runtime x86 decoding or Unicorn interpreter is shipped in Wasm.
 
 Each generated case implements the decoded instruction as C++ operations on a
 guest CPU. Emscripten 4.0.23 lowers the generated program to Wasm. A dispatch
-switch handles guest control-flow addresses; this conservative initial design
+switch grouped by 4 KiB guest address pages handles control flow; this design
 prioritizes inspectable semantics over whole-program optimization. Generated
 output is ignored and regenerated after every rule fix.
 
@@ -67,6 +67,39 @@ MXCSR exception behavior, arbitrary NaN payloads, complete instruction-prefix
 semantics, guest exceptions, multithreading, DLL loading, callbacks, and shaders
 are not validated. Unsupported required instructions/imports stop execution.
 Passing a short routine proves only those tested operations and input classes.
+
+The decoder refuses partial instructions at a section boundary, even where the
+next virtual section is also executable. SSE2 scalar-double MOVSD is currently
+unsupported and is distinguished from the string instruction. Operand-size-16
+control transfers fail explicitly. POPFD restores ordinary arithmetic/DF flags
+and ignores reserved bits; control/debug/privilege changes remain unsupported.
+These restrictions follow the
+[Intel instruction reference](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2b-manual.pdf)
+and isolated binary regressions, not assumptions about decompiler output.
+
+## Startup platform profile and reproducibility
+
+The narrow Win32 layer declares an XP SP3, single-thread GUI process with no
+inherited standard handles and an empty environment. It implements bounded
+heap ownership, TLS slots, critical-section recursion, process strings, module
+lookup and selected startup/timing APIs. Its contracts and unsupported behavior
+are detailed in [Win32 compatibility](WIN32_COMPATIBILITY.md). This profile is
+not a complete Windows environment, and no thread scheduler is provided.
+
+The entry-prefix test compares the actual original SEH/stack-probe instructions
+against Unicorn with explicit 32-bit CS/SS/DS/ES/FS descriptors, stopping before
+the first platform call. Later startup execution exercises the replacement APIs;
+it does not constitute a native-Windows differential proof of their contracts.
+
+The startup probe uses `-O0` while discovering coverage; the small differential
+modules use `-O1`. One giant dispatch function took about 102 seconds to build
+without optimization, so generated code now uses smaller page functions.
+Neither build is evidence of playable performance. Startup manifests
+record input, image, Wasm and source hashes, optimization, seeds and build timing.
+Builds reject a source change during compilation. `startup.ps1 -FromTrace`
+adds observed executable addresses from the matching local trace to the ignored
+seed file; it never executes a runtime x86 decoder. Each failed probe records
+its exact build command and the latest 4,096 dispatch addresses.
 
 The intended path is original entry -> verified CRT/platform initialization ->
 static constructors -> actual application init -> genuine quick race. There are

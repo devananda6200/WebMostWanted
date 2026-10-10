@@ -1,29 +1,38 @@
 # Next executable task
 
-Use this installation's hash and existing local configuration. Do not repeat the
-full audit unless inputs changed; never substitute another build's addresses.
+Use the existing local configuration and hash-bound seeds. Do not repeat the
+audit unless inputs changed. Original executable SHA-256:
+`80774c2e5d619b4f120b48d4462896fd504c263399d203a238769cffde1d253c`.
 
-The integration session is extending the first startup barrier with narrow
-Win32 contracts. The current tested baseline faults at `GetVersionExA` after
-original SEH/stack-probe instructions. Build and observe with:
+Current Node/browser startup reaches 10,126 dispatches and faults at
+`KERNEL32.dll!LCMapStringW`, gateway `0x03100740`, return `0x007d40d7`.
+Arguments: locale 0, flags `0x100` (lowercase), source `0x008bd0fc` containing UTF-16
+NUL, count 1, null destination, capacity 0 (size query). Implement its actual
+bounded contract and tests in `runtime/win32.hpp` / `tests/win32_test.cpp`;
+extend the trusted system NLS reference tool. Never return unconditional success.
 
 ```powershell
-cd C:\Users\festi\Downloads\WebMostWanted\browser-port
-.\scripts\startup.ps1
+Set-Location 'C:\Users\festi\Downloads\WebMostWanted\browser-port'
+.\.venv\Scripts\python.exe -m tools.win32_nls_reference
+.\.venv\Scripts\python.exe -m tools.win32_test
+.\scripts\startup.ps1 -FromTrace
+.\scripts\test.ps1
 ```
 
-Read `artifacts/startup-node.json` for first fault and last64 guest addresses.
-Implement its actual required contract in the compatibility runtime with focused
-API tests, regenerate, and compare the startup prefix against an isolated CPU
-reference. Reload the browser and repeat **Probe translated startup**.
-Do not treat a compatibility-barrier diagnostic as initialized game state.
+The startup script builds, refreshes/checks the original-prefix oracle, then
+probes startup. Nonzero exit at a required barrier is deliberate. Read
+`artifacts/startup-node.json` for stack words and last 4,096 dispatches. History
+records exact commands and source/artifact identities. For untranslated
+file-backed targets, `-FromTrace` prioritizes observed instructions on the next
+bounded build. Explicit targets use `-Seed 0xADDRESS`. Never edit generated C++.
 
-Before application initialization, validate the dynamic initializer callbacks in
-`artifacts/startup-analysis.json`. Extend translation from observed unresolved
-targets, not an unverified whole-executable conversion. The x87 app loop and
-870 static constructors remain substantial coverage work. The shortest legitimate
-quick-race entry has not yet been identified.
+Reload the browser after rebuilding; run **Run translation tests**, then
+**Probe translated startup**, and export diagnostics. Restart `scripts/serve.ps1`
+if new filenames were added. Host: http://127.0.0.1:8000/.
 
-Keep `generated/`, `build/`, and `artifacts/` local and ignored. Required platform
-features must fault until implemented. Never bypass copy protection, skip valid
-race initialization, force race results, or modify original game files/saves.
+After CRT, preserve/validate the 870 nonzero constructors in the audit. Full x87,
+guest file continuations, DLL/COM callbacks, D3D9 effects/WebGPU, audio and race
+input remain substantial work. No direct quick-race entry/resource working set
+has been verified. No menu or race has been reached. Preserve original files,
+save data, ignored generated artifacts and local evidence. Do not bypass
+licensing, force race state, invent physics/AI, or publish game-derived data.

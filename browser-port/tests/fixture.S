@@ -4,6 +4,9 @@
 .globl _arithmetic, _branch, _memory, _calls, _callee, _simd, _x87_load_store
 .globl _add_flags, _sub_flags, _adc_flags, _sbb_flags, _byte_flags
 .globl _shifts, _copy, _unmapped, _unsupported, _code_write, _indirect_missing
+.globl _xchg_alias, _partial_simd_store
+.globl _stdcall_call, _stdcall_callee
+.globl _sse_movsd_unsupported, _popfd_reserved, _popfd_control_unsupported
 
 _arithmetic:
     push ebp
@@ -127,4 +130,36 @@ _code_write:
 _indirect_missing:
     mov eax, dword ptr [esp+4]
     call eax
+    ret
+_xchg_alias:
+    mov eax, dword ptr [esp+4]
+    xchg dword ptr [eax], eax
+    ret
+_partial_simd_store:
+    mov edi, dword ptr [esp+4]
+    movups xmmword ptr [edi], xmm0
+    ret
+_stdcall_call:
+    mov edi, dword ptr [esp+4]
+    mov eax, offset _stdcall_callee
+    mov dword ptr [edi], eax
+    push 19
+    call dword ptr [edi]
+    ret
+_stdcall_callee:
+    mov eax, dword ptr [esp+4]
+    add eax, 23
+    ret 4
+_sse_movsd_unsupported:
+    movsd qword ptr [eax], xmm0
+    ret
+_popfd_reserved:
+    push dword ptr [esp+4]
+    popfd
+    pushfd
+    pop eax
+    ret
+_popfd_control_unsupported:
+    push 0x302
+    popfd
     ret

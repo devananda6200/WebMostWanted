@@ -72,6 +72,8 @@ function mapRegions(module, regions) {
 
 async function initializeCase(module, test, image = null) {
   module._reset();
+  if (typeof module._configure_platform === "function") module._configure_platform(image?.address || 0);
+  else if (typeof module._win32_reset === "function") module._win32_reset(image?.address || 0);
   mapRegions(module, test.regions);
   if (image) {
     const response = await fetch(buildURL(image.url || image.path), {cache: "no-store"});
@@ -89,7 +91,10 @@ async function initializeCase(module, test, image = null) {
       offset += value.length;
     }
     if (offset !== length) throw new Error("Startup image ended before its declared length");
-    send("image-loaded", {url: image.url || image.path, address: image.address, bytes: offset});
+    const digest = await crypto.subtle.digest("SHA-256", guestBytes(module, image.address, length));
+    const sha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    if (image.sha256 && sha256 !== image.sha256) throw new Error("Startup image SHA-256 does not match its build manifest");
+    send("image-loaded", {url: image.url || image.path, address: image.address, bytes: offset, sha256, hashVerified: Boolean(image.sha256)});
   }
   for (const write of test.writes || []) {
     if (!Array.isArray(write.bytes) || write.bytes.some(value => !Number.isInteger(value) || value < 0 || value > 255)) throw new Error("Case memory writes must contain byte values");
@@ -129,7 +134,7 @@ async function execute(module, test) {
   }
   if (![0, 1, 2].includes(code)) throw new Error(`Unexpected translated execution status ${code}`);
   const trace = typeof module._get_trace_count === "function" && typeof module._get_trace === "function"
-    ? Array.from({length: Math.min(256, module._get_trace_count())}, (_, index) => unsigned(module._get_trace(index))) : null;
+    ? Array.from({length: Math.min(256, module._get_trace_count())}, (_, index) => unsigned(module._get_trace(Math.max(0, module._get_trace_count()-256)+index))) : null;
   return {code, budgetIssued: issued, steps: typeof module._get_steps === "function" ? module._get_steps() : null,
     trace, elapsedMs: performance.now() - began, cpu: cpuState(module),
     fault: code === 2 ? {code: module._fault_code(), address: unsigned(module._fault_address()), message: module.UTF8ToString(module._fault_text())} : null};
@@ -139,6 +144,10 @@ function compareCase(module, test, execution) {
   const mismatches = [];
   if (test.expectedFault !== undefined) {
     if (execution.code !== 2 || execution.fault?.code !== test.expectedFault) mismatches.push({field: "expectedFault", expected: test.expectedFault, actual: execution.fault?.code ?? execution.code});
+    for (const block of test.unchangedOnFault || []) {
+      const bytes = guestBytes(module, block.address, block.bytes.length);
+      for (let i = 0; i < bytes.length; i++) if (bytes[i] !== block.bytes[i]) mismatches.push({field: "faultRollback", address: block.address+i, expected: block.bytes[i], actual: bytes[i]});
+    }
     return mismatches;
   }
   const expected = test.expected;
@@ -188,7 +197,7 @@ async function tests() {
     peakWasmMemoryBytes = Math.max(peakWasmMemoryBytes, module.HEAPU8.byteLength);
     for (const test of suite.cases) {
       send("phase", {message: `Executing binary case: ${item.id}/${test.id}`});
-      await initializeCase(module, test);
+      await initializeCase(module, test, item.image || null);
       const execution = await execute(module, test);
       const mismatches = compareCase(module, test, execution);
       const result = {suite: item.id, id: test.id, passed: mismatches.length === 0, ...execution, mismatches};

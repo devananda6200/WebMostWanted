@@ -10,7 +10,7 @@ class PrefixTests(unittest.TestCase):
         return Emitter(insn).emit()
 
     def test_unsupported_address_and_stack_prefixes_fail(self):
-        for data in ('66c3','66c9','67e2fd','64a5','67a5','67ab'):
+        for data in ('66c3','66c9','67e2fd','64a5','67a5','67ab','660f840000','667400'):
             with self.subTest(data=data),self.assertRaises(Unsupported): self.emit(data)
 
     def test_xchg_captures_memory_address_before_register_change(self):
@@ -20,6 +20,11 @@ class PrefixTests(unittest.TestCase):
 
     def test_unknown_instruction_is_not_success(self):
         with self.assertRaises(Unsupported): self.emit('0f0b')
+
+    def test_sse_movsd_is_not_a_string_copy(self):
+        for data in ('f20f1100','f20f1000','f20f10c1'):
+            with self.subTest(data=data),self.assertRaises(Unsupported):self.emit(data)
+        self.assertIn('r[6]+=delta',self.emit('a5'))
 
 
 if __name__=='__main__': unittest.main()

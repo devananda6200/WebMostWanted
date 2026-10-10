@@ -48,10 +48,15 @@ class PEImage:
                    and s.Characteristics & 0x20000000 for s in self.pe.sections)
 
     def read(self, address, count):
-        if not self.executable(address):
-            raise ValueError(f"Address {address:#x} has no file-backed executable section")
-        offset = self.pe.get_offset_from_rva(address - self.base)
-        return self.data[offset:offset + count]
+        rva=address-self.base
+        for section in self.pe.sections:
+            end=section.VirtualAddress+min(section.Misc_VirtualSize,section.SizeOfRawData)
+            if section.Characteristics & 0x20000000 and section.VirtualAddress<=rva<end:
+                # Adjacent executable virtual sections need not be adjacent on
+                # disk. Never decode an instruction using the next raw bytes.
+                offset=section.PointerToRawData+rva-section.VirtualAddress
+                return self.data[offset:offset+min(count,end-rva)]
+        raise ValueError(f"Address {address:#x} has no file-backed executable section")
 
     def regions(self):
         result = [{"address": self.base, "size": ((self.pe.OPTIONAL_HEADER.SizeOfHeaders + 4095)//4096)*4096, "permissions": 1}]
@@ -131,7 +136,7 @@ class Emitter:
         nxt = self.insn.address + self.insn.size
         if self.insn.addr_size != 4:
             raise Unsupported('16-bit address-size override')
-        if 0x66 in self.insn.prefix and m in ('call','ret','leave','jmp','pushfd','popfd'):
+        if 0x66 in self.insn.prefix and (self.insn.group(cs.CS_GRP_JUMP) or m in ('call','ret','leave','jmp','pushfd','popfd','loop','jecxz')):
             raise Unsupported('16-bit control/stack operand-size override')
         if m == "nop":
             return ""
@@ -158,7 +163,7 @@ class Emitter:
             if o[0].size != 4: raise Unsupported("16-bit stack operation")
             return "uint32_t v=pop();" + self.write(o[0], "v")
         if m in ("pushfd", "popfd"):
-            return "push(flags);" if m == "pushfd" else "flags=pop()|2;"
+            return "push(flags&~0x30000u);" if m == "pushfd" else "pop_flags();"
         if m == "leave":
             return "r[4]=r[5];r[5]=pop();"
         if m == "call":
@@ -244,11 +249,15 @@ class Emitter:
             return f"fpush({1 if m=='fld1' else 0}.0);"
         if m in ("fst", "fstp") and o[0].type == X86_OP_MEM and o[0].size in (4,8):
             return f"fstore({self.address(o[0])},{o[0].size*8});" + ("if(!error)fpop();" if m=="fstp" else "")
-        if m in ("rep stosd", "rep stosb", "rep movsd", "rep movsb", "stosd", "stosb", "movsd", "movsb") and all(op.type==X86_OP_MEM for op in o[:1]):
+        if m in ("rep stosd", "rep stosb", "rep movsd", "rep movsb", "stosd", "stosb", "movsd", "movsb"):
+            # SSE2 MOVSD shares a mnemonic with string MOVSD. Its register
+            # operand must never select the ESI/EDI string-copy semantics.
+            kind = m.split()[-1]
+            if kind.startswith('movs') and not (len(o)==2 and all(op.type==X86_OP_MEM for op in o)):
+                raise Unsupported('SSE2 scalar-double MOVSD')
             if any(op.type==X86_OP_MEM and op.mem.segment and self.insn.reg_name(op.mem.segment) not in ('ds','es') for op in o):
                 raise Unsupported('string operation segment override')
             repeat = m.startswith("rep ")
-            kind = m.split()[-1]
             size = 4 if kind.endswith("d") else 1
             value = "r[0]" if kind.startswith("stos") else f"rd(r[6],{size*8})"
             code = f"wr(r[7],{value},{size*8});uint32_t delta=(flags&DF)?uint32_t(-{size}):{size};r[7]+=delta;"
@@ -259,6 +268,17 @@ class Emitter:
 
 
 def lift(image: PEImage, seeds, output: Path, limit=20000, imports=None):
+    # The configured original installation is an immutable input boundary even
+    # when this lower-level CLI is used instead of the build wrappers.
+    from tools.game_config import load_game_root, require_external_output
+    try:
+        game_root=load_game_root()
+    except ValueError:
+        game_root=None # synthetic-only builds do not require game configuration
+    if game_root is not None:
+        require_external_output(output,game_root)
+    if output.resolve()==image.path.resolve():
+        raise ValueError('Refusing to overwrite the binary input')
     decoder = cs.Cs(cs.CS_ARCH_X86, cs.CS_MODE_32)
     decoder.detail = True
     queue = deque(seeds)
@@ -273,6 +293,8 @@ def lift(image: PEImage, seeds, output: Path, limit=20000, imports=None):
             missing.extend([address, *queue]); break
         insn = next(decoder.disasm(image.read(address,15), address, count=1), None)
         if insn is None:
+            missing.append(address); continue
+        if not image.executable(address+insn.size-1):
             missing.append(address); continue
         if any(p in owners and owners[p] != address for p in range(address,address+insn.size)):
             raise ValueError(f"overlapping instruction boundaries at {address:#x}")
@@ -296,23 +318,44 @@ def lift(image: PEImage, seeds, output: Path, limit=20000, imports=None):
         if m not in ("ret", "jmp", "int3", "ud2"):
             queue.append(address+insn.size)
 
-    lines = ['// GENERATED FROM LOCAL BINARY. DO NOT COMMIT OR EDIT.', '#include "runtime/guest.hpp"',
-             'extern "C" EMSCRIPTEN_KEEPALIVE int run(uint32_t budget,uint32_t stop) {',
-             'using namespace guest;', 'if(error)return 2;', 'while(budget--) {',
-             'if(ip==stop)return 1;', 'if(!access(ip,1,4))return 2;',
-             'trace[trace_count++%64]=ip;++steps;uint32_t next=ip;begin_instruction();', 'switch(ip) {']
+    # Keep each LLVM/Wasm control-flow graph small. A single 6,000-way function
+    # took minutes to compile even without optimization; page dispatch retains
+    # identical instruction transactions while bounding compiler graph size.
+    pages={}
     for address in sorted(instructions):
         insn = instructions[address]
-        lines.append(f'case 0x{address:x}u:{{next=0x{address+insn.size:x}u;{emitted[address]}break;}}')
+        pages.setdefault(address>>12,[]).append(f'case 0x{address:x}u:{{if(!access(ip,{insn.size},4))break;next=0x{address+insn.size:x}u;{emitted[address]}break;}}')
     for address, name in (imports or {}).items():
-        lines.append(f'case 0x{address:x}u:{{fault(5,ip,{json.dumps("unimplemented import: "+name)});break;}}')
+        pages.setdefault(address>>12,[]).append(f'case 0x{address:x}u:{{if(!win32::dispatch({json.dumps(name)},next))fault(5,ip,{json.dumps("unimplemented import: "+name)});break;}}')
+    lines = ['// GENERATED FROM LOCAL BINARY. DO NOT COMMIT OR EDIT.',
+             '#include "runtime/win32.hpp"' if imports else '#include "runtime/guest.hpp"']
+    for page,cases in sorted(pages.items()):
+        lines.extend([f'[[gnu::noinline]] static uint32_t page_{page:x}() {{',
+                      'using namespace guest;uint32_t next=ip;switch(ip) {',*cases,
+                      'default:fault(3,ip,"untranslated control-flow target");break;',
+                      '}return next;}'])
+    lines.extend(['extern "C" EMSCRIPTEN_KEEPALIVE int run(uint32_t budget,uint32_t stop) {',
+                  'using namespace guest;', 'if(error)return 2;', 'while(budget--) {',
+                  'if(ip==stop)return 1;', 'if(!access(ip,1,4))return 2;',
+                  'trace[trace_count++%TRACE_SIZE]=ip;++steps;uint32_t next=ip;begin_instruction();', 'switch(ip>>12) {'])
+    for page in sorted(pages):lines.append(f'case 0x{page:x}u:next=page_{page:x}();break;')
     lines.extend(['default:fault(3,ip,"untranslated control-flow target");break;',
                   '}', 'end_instruction();if(error)return 2;ip=next;', '}', 'return ip==stop?1:0;', '}'])
+    if imports:
+        lines.extend(['extern "C" EMSCRIPTEN_KEEPALIVE void configure_platform(uint32_t base) {',
+                      'win32::reset(base);',
+                      'if(!win32::register_module("kernel32.dll",0x70010000u)){guest::fault(5,0,"kernel32 registration failed");return;}'])
+        for address,name in imports.items():
+            if name.lower().startswith('kernel32.dll!'):
+                plain=name.split('!',1)[1]
+                lines.append(f'if(win32::supports({json.dumps(name)}) && !win32::register_export(0x70010000u,{json.dumps(plain)},0x{address:x}u))guest::fault(5,0,"API gateway registration failed");')
+        lines.append('}')
     output.parent.mkdir(parents=True,exist_ok=True)
     output.write_text('\n'.join(lines)+'\n',encoding='utf-8')
     report = {"schema":1,"input_name":image.path.name,"input_sha256":image.sha256,
               "image_base":image.base,"entry":image.entry,"seeds":list(seeds),
               "instruction_count":len(instructions),"instruction_limit":limit,
+              "dispatch_pages":len(pages),
               "mnemonics":dict(Counter(i.mnemonic for i in instructions.values())),
               "unsupported":unsupported,"indirect_sites":indirect,"untranslated_targets":sorted(set(missing)),
               "output_sha256":hashlib.sha256(output.read_bytes()).hexdigest()}

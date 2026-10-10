@@ -44,7 +44,8 @@ def compile_fixture():
     subprocess.run([str(clang_path()),'--target=i686-pc-windows-msvc','-c',str(source),'-o',str(obj)],check=True)
     names=['arithmetic','branch','memory','calls','callee','simd','x87_load_store',
            'add_flags','sub_flags','adc_flags','sbb_flags','byte_flags','shifts','copy',
-           'unmapped','unsupported','code_write','indirect_missing']
+           'unmapped','unsupported','code_write','indirect_missing','xchg_alias','partial_simd_store','stdcall_call','stdcall_callee',
+           'sse_movsd_unsupported','popfd_reserved','popfd_control_unsupported']
     command=[*linker_command(),'/machine:x86','/subsystem:console','/entry:arithmetic',
              '/nodefaultlib','/fixed','/base:0x1000000','/timestamp:0','/safeseh:no',
              f'/out:{exe}',*(f'/export:{name}' for name in names),str(obj)]
@@ -52,9 +53,9 @@ def compile_fixture():
     return PEImage(exe)
 
 
-def wasm(source, name):
+def wasm(source, name, optimization='-O1'):
     compile_wasm(source, ROOT/'build'/f'{name}.js', [
-        '-I'+str(ROOT),'-std=c++17','-O1','--no-entry',
+        '-I'+str(ROOT),'-std=c++17',optimization,'--no-entry',
         '-sMODULARIZE=1','-sEXPORT_ES6=1','-sENVIRONMENT=web,worker,node',
         '-sALLOW_MEMORY_GROWTH=0','-sINITIAL_MEMORY=83886080','-sSTACK_SIZE=1048576',
         '-sASSERTIONS=2','-sEXPORTED_RUNTIME_METHODS=["UTF8ToString","HEAPU8"]',
@@ -129,6 +130,9 @@ def synthetic_cases(image):
         c=case(image,name,[DATA+128,DATA],writes=[{'address':DATA,'bytes':dwords(*range(8))}])
         cases.append(reference(c))
     for i,v in enumerate(boundary): cases.append(reference(case(image,f'calls/{i}',[v])))
+    cases.append(reference(case(image,'xchg_alias',[DATA],writes=[{'address':DATA,'bytes':dwords(0x12345678)}])))
+    cases.append(reference(case(image,'stdcall_call',[DATA])))
+    cases.append(reference(case(image,'popfd_reserved',[0x20a])))
     # Finite, exactly representable SIMD operands avoid making a claim about
     # NaN payloads, MXCSR exceptions, or x87 extended arithmetic.
     values=[1.5,-2.0,3.25,0.125,2.0,4.0,-0.5,8.0,7.75]
@@ -182,12 +186,18 @@ def main():
     write_json(ROOT/'build/synthetic-cases.json',{'schema':1,'input_sha256':fixture.sha256,'cases':cases})
     # Fail-closed cases are tested by Node separately from successful references.
     faults=[]
-    for name,code in [('unmapped',1),('unsupported',2),('code_write',4),('indirect_missing',3)]:
+    for name,code in [('unmapped',1),('unsupported',2),('code_write',4),('indirect_missing',3),('sse_movsd_unsupported',2),('popfd_control_unsupported',2)]:
         c=case(fixture,name,[STOP+128]);c['expectedFault']=code
         if name=='code_write':
             for region in c['regions']:
                 if region['permissions'] & 4: region['permissions'] |= 2
         faults.append(c)
+    c=case(fixture,'partial_simd_store',[DATA+4096-8],writes=[{'address':DATA+4096-8,'bytes':[0xa5]*8}])
+    for region in c['regions']:
+        if region['address']==DATA: region['size']=4096
+    c['expectedFault']=1
+    c['unchangedOnFault']=[{'address':DATA+4096-8,'bytes':[0xa5]*8}]
+    faults.append(c)
     write_json(ROOT/'build/fault-cases.json',{'schema':1,'cases':faults})
     suites=[{'id':'synthetic','module':'synthetic.js','cases':'synthetic-cases.json','faultCases':'fault-cases.json','input_sha256':fixture.sha256}]
     reports={'synthetic':report}
@@ -201,7 +211,7 @@ def main():
     manifest={'schema':1,'kind':'differential-tests','built_at_utc':datetime.now(timezone.utc).isoformat(),
               'toolchain':SDK_VERSION,'reference':'Unicorn 2.1.4 isolated x86 CPU; no native game execution',
               'suites':suites,
-              'artifact_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (ROOT/'build').glob('*.wasm')}}
+              'artifact_sha256':{s['module'].replace('.js','.wasm'):hashlib.sha256((ROOT/'build'/s['module'].replace('.js','.wasm')).read_bytes()).hexdigest() for s in suites}}
     write_json(ROOT/'build/manifest.json',manifest)
     write_json(ROOT/'artifacts/translation-build.json',{'manifest':manifest,'reports':reports})
     print(json.dumps({'suites':suites,'status':'built; run tests/run_wasm.mjs and browser tests'},indent=2))
