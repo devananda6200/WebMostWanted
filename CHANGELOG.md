@@ -4,16 +4,26 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
-No project implementation has been recorded yet. Replace this sentence with entries as you build:
+## 2026-10-11T00:38:35+05:30 — audit, binary translation proof, and browser host
 
-```text
-## <actual timestamp> — <short change title>
-
-- Changed: <feature or files changed>
-- Why: <reason for the change>
-- Validation: <commands or manual checks actually run, with results>
-- Limitations: <known issues or "None identified in these checks">
-```
+- Changed: Added browser-port tools, translator/runtime, PE fixture, differential
+  tests, browser worker/WebGPU probes, read-only bounded asset server, PowerShell
+  entry points, and architecture/audit/status/dependency documentation. Ignored
+  original installation, local toolchain, generated game code, memory images,
+  profiles, and diagnostic artifacts.
+- Why: Establish executable identity and a tested translation pipeline before
+  expanding original startup and race coverage.
+- Validation: Audited 1,363 files and five PE identities without executing original
+  binaries; native portable Emscripten/toolchain smoke passed; Node and browser
+  passed 632 synthetic + 38 real-routine differential cases + four expected faults.
+  Browser WebGPU AMD RDNA3 nonfallback device, Emdawn instance, worker, and COOP/COEP
+  verified. Focused audit/server/prefix tests passed. Detailed local evidence is
+  indexed in browser-port/docs/VERIFIED_STATUS.md.
+- Corrections: Exported HEAPU8 explicitly; rejected unsupported prefixes; added
+  fault rollback; fixed request-path normalization; reduced diagnostic DOM churn.
+- Limitations: M1 verified for a limited instruction subset. Original startup
+  reaches GetVersionExA then stops at the required API. No authentic menu, D3D9
+  renderer, driving, completed race, native game reference run, or game FPS result.
 
 ## Template setup — 10 October 2026
 

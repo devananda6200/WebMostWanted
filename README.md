@@ -27,30 +27,24 @@ Keep your approved Luma QR code ready for entry, and bring your laptop and charg
 4. Record meaningful changes in [CHANGELOG.md](CHANGELOG.md) and your Codex usage in [AI_USAGE.md](AI_USAGE.md). Commit after completed milestones; aim for a meaningful checkpoint about every 30 minutes.
 5. Complete [SUBMISSION.md](SUBMISSION.md) with your code repository, short project description, and working demo. Follow submission instructions announced by the organizers.
 
-This template has no application code or required technology stack. The documentation and commit cadence are repository workflow guidance; the event participation rules are in [RULES.md](RULES.md).
+The initial template supplied documentation scaffolding only. The project implementation is described below. The documentation and commit cadence are repository workflow guidance; the event participation rules are in [RULES.md](RULES.md).
 
-## Project overview — complete during the event
+## Project: WebMostWanted
 
-- **Project name:** TODO
-- **Short description:** TODO — what it does, who it helps, and why it matters.
-- **Team:** TODO — participant names and GitHub handles; maximum 4 members.
-- **Working demo:** TODO — link or local demo instructions.
-- **Technology stack:** TODO
+Implementation is in [browser-port](browser-port/README.md). This is a local
+binary-translation research port of the supplied Most Wanted executable, with
+an installation audit, x86-to-C++/Wasm tests, and browser host. **A playable race
+has not been demonstrated.** Participant names have not been supplied.
 
-### Run the project
+From `browser-port`, run `scripts/setup.ps1`, configure the ignored local game
+path, then run `scripts/build.ps1`, `scripts/test.ps1`, and `scripts/serve.ps1`.
+The [project README](browser-port/README.md) gives complete setup/demo commands;
+[verified status](browser-port/docs/VERIFIED_STATUS.md) distinguishes tested
+translation from incomplete game initialization and rendering.
 
-Replace these placeholders with commands that actually work for your project:
-
-1. Prerequisites and versions: TODO
-2. Dependency installation: TODO
-3. Environment setup: TODO — list required variable names and provide a sanitized `.env.example` if needed.
-4. Start the project: TODO
-5. Run checks or tests: TODO
-
-### Current status
-
-- Working features: TODO
-- Known limitations: TODO
-- Libraries, APIs, and public datasets used: TODO — include source links and applicable attribution.
+Stack: Python, pefile, Capstone, Unicorn reference execution, generated C++,
+Emscripten 4.0.23, WebAssembly, browser workers, WebGPU/Emdawnwebgpu. Dependency
+sources and licenses are recorded in [DEPENDENCIES.md](browser-port/docs/DEPENDENCIES.md).
+Original assets and all game-derived outputs stay local and ignored by Git.
 
 See [AI_USAGE.md](AI_USAGE.md) for AI assistance and [CHANGELOG.md](CHANGELOG.md) for the development record.

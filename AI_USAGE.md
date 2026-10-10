@@ -4,11 +4,11 @@ Use Codex during the hackathon and briefly document its actual contribution here
 
 ## Event build log
 
-No participant AI usage has been recorded yet. Replace the placeholder row as you build. Mark human review as pending until someone has reviewed the contribution.
+Human review remains pending unless explicitly recorded otherwise.
 
 | Date and time with timezone | Tool / model, if known | Task | Assistance and affected files | Human review / corrections | Validation and result |
 | --- | --- | --- | --- | --- | --- |
-| TODO | Codex | TODO | TODO | Pending | TODO |
+| 2026-10-11T00:38:35+05:30 | Codex | Local browser-port implementation | Audited installation; built portable toolchain, binary lifter, checked guest memory, reference/Wasm tests, worker host and read-only server; delegated bounded audit/toolchain/browser tasks with separate file ownership. | Human review pending. Agent review corrected prefix handling, HEAPU8 exports, fault state rollback, path validation and diagnostic rendering. | 674 Node/browser cases passed; WebGPU/worker/isolation verified. Original entry reaches a required platform barrier; no playable game claimed. |
 
 ## Template preparation
 

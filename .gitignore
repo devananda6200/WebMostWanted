@@ -22,3 +22,12 @@ Thumbs.db
 *.log
 
 # Add entries appropriate to your chosen language or framework.
+
+# Original proprietary inputs and local binary-translation artifacts.
+/NFS-Most-Wanted-2005/
+/browser-port/.tools/
+/browser-port/config.local.json
+/browser-port/generated/
+/browser-port/build/
+/browser-port/artifacts/
+/browser-port/test-profiles/
