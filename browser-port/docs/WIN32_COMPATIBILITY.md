@@ -71,8 +71,12 @@ its gateway executable. Reset removes registrations to prevent stale targets.
   UTF-16 lengths including embedded NULs, and -1 terminated strings including
   their terminator. A zero output capacity queries the required size. With
   `WC_NO_BEST_FIT_CHARS`, unmapped BMP characters use the supplied/default byte
-  and report its use; with flags zero, an unmapped character faults because
-  the full Windows best-fit table is not implemented. Other code pages, flags,
+  and report its use. With flags zero, the one observed best-fit requirement
+  U+0191 maps to byte `0x83` without default-character use; every other unmapped
+  character faults because the full best-fit table is not implemented. This
+  pair appears when CRT case-table initialization uppercases CP1252 f-hook.
+  With `WC_NO_BEST_FIT_CHARS`, U+0191 instead uses the default and reports it.
+  Other code pages, flags,
   surrogate conversion, and undocumented negative lengths fault explicitly.
   Invalid parameters fail; unmapped guest buffers fault before writing. A short
   valid output buffer receives its converted prefix and error 122. Conversion
@@ -98,6 +102,20 @@ its gateway executable. Reset removes registrations to prevent stale targets.
   diagnostics. This restricted table agrees with the measured current host;
   equivalence to every historical XP classification is unverified.
   [Classification contract and bit values](https://learn.microsoft.com/en-us/windows/win32/api/stringapiset/nf-stringapiset-getstringtypew)
+- `LCMapStringW` supports plain lowercase (`0x100`) or uppercase (`0x200`) for
+  CP1252 input characters at the observed locale value 0, explicit en-US
+  (`0x409`), and invariant (`0x7f`). All 256 characters were checked individually
+  and as a string: these modes produce one UTF-16 unit per input. Sharp S and
+  the micro sign remain unchanged; uppercase f-hook maps U+0192 to U+0191,
+  which lies outside the input repertoire. No host locale service is needed in
+  the browser. Positive counts preserve embedded NULs; any negative count
+  includes the terminator. Queries return units, in-place mapping is supported,
+  short buffers fail without mutation, and invalid pointers/capacities fail.
+  Other locales, linguistic casing, sort keys, flags, and input codepoints stop
+  explicitly. Input has the same 32,768-unit bound. Locale 0 was checked on the
+  captured host with thread/user LCID `0x4009` and system LCID `0x409`; historical
+  XP equivalence and other locales are unverified.
+  [Locale mapping contract](https://learn.microsoft.com/en-us/windows/win32/api/winnls/nf-winnls-lcmapstringw)
 - `GetModuleHandleA(NULL)` returns the configured executable image base. Named
   queries inspect explicitly registered replacement modules; absent modules
   return NULL with error 126. Matching is ASCII case insensitive and appends
@@ -122,12 +140,36 @@ its gateway executable. Reset removes registrations to prevent stale targets.
   allocator commits chunks from this arena; it does not reproduce the Windows
   heap's internal bookkeeping or virtual-memory reservation layout.
   [HeapCreate](https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapcreate), [HeapAlloc](https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapalloc)
+- `IsBadReadPtr` checks the actual guest page map. Zero bytes returns zero;
+  nonzero NULL, ranges extending beyond guest memory, overflow, or any page
+  lacking read permission return nonzero. The query never dereferences the
+  candidate address, raises a guest fault, changes page permissions, or changes
+  last error. It follows stdcall and preserves other guest CPU state. Microsoft
+  marks this API obsolete: readable memory is not proof of valid allocation
+  lifetime. Accordingly, a freed block in a committed heap page remains readable;
+  destroying its heap unmaps the page and changes the result. The implementation
+  covers the current single-thread guest map, with no guard-page side effects or
+  guarantee against future concurrent mapping changes.
+  [Readability contract and deprecation](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-isbadreadptr)
 - Heap allocation and size failures preserve last error, as documented.
   HeapFree accepts NULL and reports invalid/double frees without inventing
   success. Executable heaps and exception-generating allocation modes fault
-  until generated-code handling and guest SEH exist. HeapReAlloc, HeapValidate,
+  until generated-code handling and guest SEH exist. HeapReAlloc,
   HeapLock, and HeapUnlock remain unsupported.
   [HeapFree](https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapfree), [HeapSize](https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapsize)
+- `HeapValidate` checks the replacement allocator's actual control structures.
+  A non-NULL pointer must identify an exact live allocation: its size, alignment,
+  requested-size metadata, page ownership/permissions, and overlapping records
+  must be consistent. It does not validate unrelated blocks. NULL validates
+  the whole heap, including free blocks, committed-byte accounting, complete
+  coverage, nonoverlap and foreign allocation records intruding on owned pages.
+  Only flags 0 and `HEAP_NO_SERIALIZE` are accepted in the current single-thread
+  model. Invalid handles, flags, interior/freed/foreign pointers and corruption
+  return zero without changing last error, faulting, or repairing the metadata.
+  User data is not itself a heap control structure; arbitrary data changes are
+  allowed. These checks validate this allocator's side tables, not undocumented
+  native Windows heap headers, guard records, or allocation overrun canaries.
+  [Validation scope and last-error contract](https://learn.microsoft.com/en-us/windows/win32/api/heapapi/nf-heapapi-heapvalidate)
 - `TlsAlloc`, `TlsFree`, `TlsGetValue`, and `TlsSetValue` manage 64 slots for the
   one actual guest thread. Slots initialize to zero; exhaustion fails.
   TlsGetValue clears last error on successful retrieval, including zero.
@@ -135,6 +177,20 @@ its gateway executable. Reset removes registrations to prevent stale targets.
   by `GetCurrentProcessId` and `GetCurrentThreadId` identify this guest process
   and thread, both currently 1. Guest thread creation remains unsupported.
   [TlsAlloc](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-tlsalloc), [TlsGetValue](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-tlsgetvalue)
+- `IsProcessorFeaturePresent(0)` returns zero: the declared software CPU does
+  not reproduce the Pentium floating-point precision erratum queried by feature
+  `PF_FLOATING_POINT_PRECISION_ERRATA`. This is a virtual CPU property, independent
+  of the browser host's hardware. It preserves last error and does not assert
+  complete floating-point or SIMD instruction support. Every other feature ID
+  faults with the requested ID until its guest capability is explicitly modeled.
+  [Feature IDs and return contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent)
+- `SetUnhandledExceptionFilter` stores the process's guest callback address and
+  returns the previously registered address. NULL restores default registration;
+  a process reset clears it. Registration never dereferences, validates as code,
+  or invokes that address, and it preserves last error. Exception delivery and
+  `UnhandledExceptionFilter` remain unsupported: required calls and runtime
+  faults still stop. Stored callbacks do not clear faults or pretend to recover.
+  [Registration, replacement, and return contract](https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setunhandledexceptionfilter)
 - `InitializeCriticalSection`, `InitializeCriticalSectionAndSpinCount`,
   `EnterCriticalSection`, `TryEnterCriticalSection`, `LeaveCriticalSection`,
   and `DeleteCriticalSection` maintain registered objects, owner IDs, and
@@ -154,6 +210,16 @@ its gateway executable. Reset removes registrations to prevent stale targets.
   actual host wall clock to 100-nanosecond units since 1601 with millisecond
   source precision. Outputs are fully validated eight-byte guest buffers.
   [QPC](https://learn.microsoft.com/en-us/windows/win32/api/profileapi/nf-profileapi-queryperformancecounter), [FILETIME API](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemtimeasfiletime)
+- `GetTickCount` uses that same monotonic source, truncated to milliseconds and
+  reduced modulo 2^32. The first `win32::reset` establishes the virtual boot epoch;
+  later process resets in the same Wasm module preserve uptime. Loading a new
+  module starts a new virtual boot. This is not the host Windows uptime. Last
+  error is preserved; clock resolution remains browser dependent. The pinned
+  Emscripten 4.0.23 non-pthread, non-AudioWorklet implementation in
+  `src/lib/libcore.js` uses `performance.now`; no wall-clock fallback is selected
+  by this build. Nonfinite or negative elapsed values fault instead of producing
+  a fabricated time. Conversion tests cover rollover without waiting 49.7 days.
+  [DWORD milliseconds and rollover](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-gettickcount), [Emscripten clock API](https://emscripten.org/docs/api_reference/emscripten.h.html#c.emscripten_get_now)
 
 There is no threading model, TEB field synchronization for direct LastError/TLS
 access, DLL loader, SEH dispatch, Windows registry, filesystem, or Direct3D support in
@@ -170,7 +236,7 @@ From `browser-port/`:
 ```
 
 The current command builds `tests/win32_test.cpp` with pinned Emscripten and runs
-it in Node Wasm. Eighteen groups passed: version/ABI output; allocation/reuse/zeroing;
+it in Node Wasm. Twenty-eight groups passed: version/ABI output; allocation/reuse/zeroing;
 heap growth/limits/reset; TLS/error contracts; actual clocks; invalid pointers,
 unsupported exports/flags and preservation of existing mappings; module/export
 registration with absent-module/FLS responses and bounded strings; and recursive
@@ -182,6 +248,32 @@ environment conversion, exact characters, terminated/explicit lengths, sizing,
 custom defaults, partial output, large output, errors and unsupported modes.
 Four further groups cover reverse conversion, classification, the entire
 CP1252 repertoire, and explicit classification/conversion failures.
+Two case-mapping groups cover exceptional characters, sizing, NUL handling,
+in-place mapping, invalid buffers and explicit unsupported-mode barriers.
+The added best-fit group checks only the confirmed U+0191 pair, size queries,
+custom defaults, omitted default reporting, strict no-best-fit behavior and short
+buffers. The authored 256-character uppercase-to-CP1252 sequence also passes.
+Readability tests cover zero/null/overflow/end boundaries, cross-page failures,
+read-only/read-write/executable permissions, unchanged CPU flags/registers/error,
+and committed-versus-destroyed heap memory.
+Two heap-validation groups check valid/zero-size allocations, freed/interior/
+foreign pointers, whole-heap scope and preserved CPU/error state. Deliberate
+metadata faults cover requested-size corruption, misalignment, overlapping or
+duplicate blocks, invalid free records, coverage gaps, committed-count mismatch,
+page ownership/permission changes and foreign records. Validation never repairs
+these injected faults; restoring the test fixture restores a passing result.
+The processor-feature group verifies the feature-zero response, stdcall cleanup,
+preserved CPU/error state, and explicit barriers for feature IDs 1, 6 and
+0xffffffff without consuming the call frame.
+Exception-filter registration tests check repeated replacement and previous
+addresses, NULL and process resets, arbitrary guest pointers, stdcall cleanup,
+preserved CPU/error state, malformed frames, and the retained delivery barrier.
+Two tick-clock groups check observed monotonic progress without sleeps, agreement
+with bracketing QPC samples, zero-argument ABI, preserved registers/error and
+uptime across process resets. Authored elapsed inputs verify truncation, the
+2^32 boundary, later rollovers, modular subtraction and invalid-clock faults.
+The report's captured stdout includes actual tick values, sample count and
+elapsed observation time; no real multi-day wait is claimed.
 The contention test deliberately
 injects another-owner state to verify the scheduling barrier; it does not claim
 that a second guest thread was run.
@@ -196,14 +288,20 @@ isolated in-memory strings:
 .\.venv\Scripts\python.exe -m tools.win32_nls_reference
 ```
 
-`artifacts/win32-nls-reference.json` retains 22 observed conversion/classification cases, CPINFO
+`artifacts/win32-nls-reference.json` retains 44 observed NLS cases, 512 individual
+case mappings, CPINFO
 bytes, exact command, Python and Windows identities, and the loaded kernel32
 path/hash. The recorded host was Windows build 26300, Python 3.11.0 x64, kernel32
 SHA-256 `8f8629741558b5df71def4e1dd8ef9645d4f806b949762c47757c50fea1a9e6d`.
 It confirmed prefix writes and default-use reporting on short buffers, the five
 CP1252 control slots, and the metadata. With this reference artifact present,
-`tools.win32_test` also compares all 256 decoded Unicode values and all 256
-CT_CTYPE1 masks returned by Wasm. All 512 values matched. The test report pins
+`tools.win32_test` also compares all 256 decoded Unicode values, all 256 CT_CTYPE1
+masks, and 256 lower/uppercase outputs for each of three locales returned by
+Wasm. All 2,048 values matched, and the individual native case-mapping probes
+confirm the absence of expansions in these tested modes. Eight U+0191 cases
+also compare return values, default-use flags, last errors, and every byte in
+the 16-byte output/canary buffers. All eight matched; unverified best-fit
+mappings retain explicit regression-tested faults. The test report pins
 the reference artifact hash and host build; if the reference is missing, this
 comparison is marked unverified. The probe is not a native game run or a complete XP oracle. The
 host accepts undocumented length -2 as terminated; this runtime deliberately

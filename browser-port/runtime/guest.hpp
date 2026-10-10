@@ -18,9 +18,10 @@ inline uint32_t error, error_address;
 inline const char* error_text="";
 inline double fpu[8];
 inline uint32_t fpu_depth;
+inline uint16_t fpu_control=0x037f, fpu_status;
 constexpr uint32_t TRACE_SIZE=4096;
 inline uint32_t trace[TRACE_SIZE], trace_count;
-struct CpuSnapshot { uint32_t r[8],xmm[8][4],flags; double fpu[8]; uint32_t depth; };
+struct CpuSnapshot { uint32_t r[8],xmm[8][4],flags; double fpu[8]; uint32_t depth; uint16_t control,status; };
 struct UndoWrite { uint32_t address,value; unsigned bits; };
 inline CpuSnapshot saved;
 inline UndoWrite undo[1024];
@@ -30,6 +31,7 @@ inline bool transaction;
 inline void begin_instruction() {
     std::memcpy(saved.r,r,sizeof(r)); std::memcpy(saved.xmm,xmm,sizeof(xmm));
     std::memcpy(saved.fpu,fpu,sizeof(fpu)); saved.flags=flags; saved.depth=fpu_depth;
+    saved.control=fpu_control; saved.status=fpu_status;
     undo_count=0; transaction=true;
 }
 inline void end_instruction() {
@@ -37,6 +39,7 @@ inline void end_instruction() {
         while(undo_count) { auto w=undo[--undo_count]; std::memcpy(memory+w.address,&w.value,w.bits/8); }
         std::memcpy(r,saved.r,sizeof(r));std::memcpy(xmm,saved.xmm,sizeof(xmm));
         std::memcpy(fpu,saved.fpu,sizeof(fpu));flags=saved.flags;fpu_depth=saved.depth;
+        fpu_control=saved.control; fpu_status=saved.status;
     }
     transaction=false;
 }
@@ -80,13 +83,14 @@ inline uint32_t pop() { uint32_t value=rd(r[4],32); if (!error) r[4]+=4; return 
 inline void pop_flags() {
     uint32_t value=pop();
     if(error)return;
-    // Only ordinary arithmetic/DF restores are modeled. Reserved bits are
-    // ignored; control/debug/privilege changes require a fuller CPU model.
-    constexpr uint32_t controls=0x003f7300u;
+    // Arithmetic, DF and the CPUID-detection ID flag are modeled. Reserved bits
+    // are ignored; other control/debug/privilege changes require a fuller CPU.
+    constexpr uint32_t id_flag=0x00200000u;
+    constexpr uint32_t controls=0x001f7300u;
     if((value&controls)!=(flags&controls)) {
         fault(2,ip,"POPFD control/debug/privilege flag change is not implemented");return;
     }
-    flags=(value&(ARITH|DF))|(flags&controls)|2u;
+    flags=(value&(ARITH|DF|id_flag))|(flags&controls)|2u;
 }
 inline uint32_t read_reg(unsigned reg, unsigned bits, unsigned shift=0) { return (r[reg]>>shift)&mask(bits); }
 inline void write_reg(unsigned reg, unsigned bits, unsigned shift, uint32_t value) {
@@ -144,24 +148,67 @@ inline bool condition(unsigned c) {
         case 12:return s!=o; case 13:return s==o; case 14:return z||(s!=o); case 15:return !z&&(s==o);
     } return false;
 }
+inline void cpuid() {
+    // Measured with authored CPUID instructions on pinned Unicorn 2.1.4's
+    // UC_CPU_X86_PENTIUM3 profile. Leaves 0/1 ignore incoming ECX. These are
+    // declared guest capabilities, never a query of the browser host's CPU.
+    if(r[0]==0) { r[0]=3; r[3]=0x756e6547; r[1]=0x6c65746e; r[2]=0x49656e69; }
+    else if(r[0]==1) { r[0]=0x673; r[3]=0x800; r[1]=0x80000000; r[2]=0x0383fbfd; }
+    else fault(2,ip,"CPUID leaf outside verified guest profile");
+}
 inline float as_float(uint32_t bits) { float result; std::memcpy(&result,&bits,4); return result; }
 inline uint32_t as_bits(float value) { uint32_t result; std::memcpy(&result,&value,4); return result; }
+inline void fwait() {
+    if(fpu_status & ~fpu_control & 0x3f)
+        fault(2,ip,"pending unmasked x87 exception requires guest exception delivery");
+}
+inline void finit() {
+    fpu_control=0x037f; fpu_status=0; fpu_depth=0;
+    std::memset(fpu,0,sizeof(fpu));
+}
+inline void fldcw(uint32_t address) {
+    fwait();
+    uint32_t value=rd(address,16);
+    if(!error)fpu_control=uint16_t(value);
+}
 inline void fpush(double value) {
+    fwait(); if(error)return;
     if(fpu_depth==8) { fault(2,ip,"x87 stack overflow"); return; }
     for(unsigned i=fpu_depth;i>0;--i) fpu[i]=fpu[i-1]; fpu[0]=value; ++fpu_depth;
+    fpu_status=(fpu_status&~0x3a00u)|((((fpu_status>>11)-1u)&7u)<<11);
 }
 inline void fpop() {
     if(!fpu_depth) { fault(2,ip,"x87 stack underflow"); return; }
     for(unsigned i=1;i<fpu_depth;++i) fpu[i-1]=fpu[i]; --fpu_depth;
+    fpu_status=(fpu_status&~0x3800u)|((((fpu_status>>11)+1u)&7u)<<11);
 }
-// Only exact x87 load/store bridges are currently supported, not 80-bit arithmetic.
+// Control words are real guest state. Only finite, normal/zero exact loads and
+// stores are supported: rounding/denormal/NaN exception behavior must not be
+// silently inherited from the Wasm host's double operations.
 inline double fload(uint32_t address,unsigned bits) {
-    if(bits==32) return as_float(rd(address,32));
-    double value=0; if(access(address,8,1)) std::memcpy(&value,memory+address,8); return value;
+    fwait(); if(error)return 0;
+    double value=0;
+    if(bits==32) {
+        float single=as_float(rd(address,32)); value=single;
+        if(!std::isfinite(single)||std::fpclassify(single)==FP_SUBNORMAL)
+            fault(2,ip,"x87 nonfinite/denormal load is not implemented");
+    } else {
+        if(access(address,8,1)) std::memcpy(&value,memory+address,8);
+        if(!std::isfinite(value)||std::fpclassify(value)==FP_SUBNORMAL)
+            fault(2,ip,"x87 nonfinite/denormal load is not implemented");
+    }
+    return value;
 }
 inline void fstore(uint32_t address,unsigned bits) {
+    fwait(); if(error)return;
     if(!fpu_depth) { fault(2,ip,"x87 stack underflow"); return; }
-    if(bits==32) wr(address,as_bits(float(fpu[0])),32);
+    if(bits==32) {
+        float value=float(fpu[0]);
+        if(!std::isfinite(value)||std::fpclassify(value)==FP_SUBNORMAL||double(value)!=fpu[0]) {
+            fault(2,ip,"x87 rounded/denormal store is not implemented");return;
+        }
+        wr(address,as_bits(value),32);
+    }
     else { uint64_t value;std::memcpy(&value,&fpu[0],8);wr(address,uint32_t(value),32);wr(address+4,uint32_t(value>>32),32); }
 }
 } // namespace guest
@@ -172,6 +219,7 @@ EMSCRIPTEN_KEEPALIVE void reset() {
     std::memset(memory,0,SIZE); std::memset(permissions,0,sizeof(permissions));
     std::memset(r,0,sizeof(r)); std::memset(xmm,0,sizeof(xmm)); std::memset(fpu,0,sizeof(fpu));
     ip=fsbase=steps=error=error_address=fpu_depth=trace_count=0; flags=0x202; error_text="";
+    fpu_control=0x037f; fpu_status=0;
     transaction=false;undo_count=0;
 }
 EMSCRIPTEN_KEEPALIVE uintptr_t memory_base() { return reinterpret_cast<uintptr_t>(guest::memory); }
@@ -191,6 +239,10 @@ EMSCRIPTEN_KEEPALIVE void set_fs_base(uint32_t value) { guest::fsbase=value; }
 EMSCRIPTEN_KEEPALIVE uint32_t get_xmm(uint32_t i,uint32_t lane) { return i<8&&lane<4?guest::xmm[i][lane]:0; }
 EMSCRIPTEN_KEEPALIVE void set_xmm(uint32_t i,uint32_t lane,uint32_t bits) { if(i<8&&lane<4) guest::xmm[i][lane]=bits; }
 EMSCRIPTEN_KEEPALIVE uint32_t get_fpu_depth() { return guest::fpu_depth; }
+EMSCRIPTEN_KEEPALIVE uint32_t get_fpu_control() { return guest::fpu_control; }
+EMSCRIPTEN_KEEPALIVE uint32_t get_fpu_status() { return guest::fpu_status; }
+EMSCRIPTEN_KEEPALIVE void set_fpu_control(uint32_t value) { guest::fpu_control=uint16_t(value); }
+EMSCRIPTEN_KEEPALIVE void set_fpu_status(uint32_t value) { guest::fpu_status=uint16_t(value); }
 EMSCRIPTEN_KEEPALIVE uint32_t fault_code() { return guest::error; }
 EMSCRIPTEN_KEEPALIVE uint32_t fault_address() { return guest::error_address; }
 EMSCRIPTEN_KEEPALIVE const char* fault_text() { return guest::error_text; }

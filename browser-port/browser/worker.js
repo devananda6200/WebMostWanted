@@ -42,7 +42,7 @@ async function loadModule(name, artifactHashes = {}) {
     print: message => send("wasm-stdout", {message}),
     printErr: message => send("wasm-stderr", {message}),
   });
-  for (const name of ["_reset", "_memory_base", "_memory_size", "_map_region", "_set_reg", "_get_reg", "_set_eip", "_get_eip", "_set_flags", "_get_flags", "_run", "_fault_code", "_fault_address", "_fault_text", "_set_xmm", "_get_xmm", "UTF8ToString"]) {
+  for (const name of ["_reset", "_memory_base", "_memory_size", "_map_region", "_set_reg", "_get_reg", "_set_eip", "_get_eip", "_set_flags", "_get_flags", "_run", "_fault_code", "_fault_address", "_fault_text", "_set_xmm", "_get_xmm", "_get_fpu_control", "_get_fpu_status", "_get_fpu_depth", "_set_fpu_control", "_set_fpu_status", "UTF8ToString"]) {
     if (typeof module[name] !== "function") throw new Error(`Translated module is missing ${name}`);
   }
   if (!(module.HEAPU8 instanceof Uint8Array)) throw new Error("Translated module does not expose its Wasm byte heap");
@@ -111,10 +111,12 @@ async function initializeCase(module, test, image = null) {
     if (typeof module._set_fs_base !== "function") throw new Error("This case requires the FS segment-base export");
     module._set_fs_base(test.fsBase);
   }
+  if (test.fpuControl !== undefined) module._set_fpu_control(test.fpuControl);
+  if (test.fpuStatus !== undefined) module._set_fpu_status(test.fpuStatus);
 }
 
 function cpuState(module) {
-  return {registers: Array.from({length: 8}, (_, index) => unsigned(module._get_reg(index))), eip: unsigned(module._get_eip()), eflags: unsigned(module._get_flags()), xmm: Array.from({length: 8}, (_, register) => Array.from({length: 4}, (_, lane) => unsigned(module._get_xmm(register, lane))))};
+  return {registers: Array.from({length: 8}, (_, index) => unsigned(module._get_reg(index))), eip: unsigned(module._get_eip()), eflags: unsigned(module._get_flags()), xmm: Array.from({length: 8}, (_, register) => Array.from({length: 4}, (_, lane) => unsigned(module._get_xmm(register, lane)))), fpu: {control: module._get_fpu_control(), status: module._get_fpu_status(), depth: module._get_fpu_depth()}};
 }
 
 async function execute(module, test) {
@@ -148,6 +150,12 @@ function compareCase(module, test, execution) {
       const bytes = guestBytes(module, block.address, block.bytes.length);
       for (let i = 0; i < bytes.length; i++) if (bytes[i] !== block.bytes[i]) mismatches.push({field: "faultRollback", address: block.address+i, expected: block.bytes[i], actual: bytes[i]});
     }
+    for (const [field, expected] of Object.entries(test.expectedFpuOnFault || {})) {
+      if (execution.cpu.fpu[field] !== expected) mismatches.push({field: `x87.${field}`, expected, actual: execution.cpu.fpu[field]});
+    }
+    (test.expectedRegistersOnFault || []).forEach((expected, index) => {
+      if (execution.cpu.registers[index] !== expected) mismatches.push({field: `registers[${index}]`, expected, actual: execution.cpu.registers[index]});
+    });
     return mismatches;
   }
   const expected = test.expected;
@@ -157,6 +165,8 @@ function compareCase(module, test, execution) {
     if (unsigned(value) !== execution.cpu.registers[index]) mismatches.push({field: `registers[${index}]`, expected: unsigned(value), actual: execution.cpu.registers[index]});
   });
   const mask = unsigned(expected.flagsMask ?? 0xffffffff);
+  if (expected.fpuControl !== undefined && expected.fpuControl !== execution.cpu.fpu.control) mismatches.push({field: "x87.control", expected: expected.fpuControl, actual: execution.cpu.fpu.control});
+  if (expected.fpuStatus !== undefined && expected.fpuStatus !== execution.cpu.fpu.status) mismatches.push({field: "x87.status", expected: expected.fpuStatus, actual: execution.cpu.fpu.status});
   if (unsigned(expected.eflags & mask) !== unsigned(execution.cpu.eflags & mask)) mismatches.push({field: "eflags", mask, expected: unsigned(expected.eflags), actual: execution.cpu.eflags});
   for (let register = 0; register < (expected.xmm || []).length; register++) {
     expected.xmm[register].forEach((value, lane) => {
@@ -217,6 +227,17 @@ async function startup() {
   // Mapped PE image bytes precede isolated state writes. No native execution.
   await initializeCase(module, manifest.case, manifest.image);
   const execution = await execute(module, manifest.case);
+  const stack = execution.cpu.registers[4];
+  if (stack + 48 <= unsigned(module._memory_size())) {
+    const bytes = guestBytes(module, stack, 48);
+    const words = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    execution.stackWords = Array.from({length: 12}, (_, index) => words.getUint32(index * 4, true));
+  }
+  if (execution.fault && execution.fault.address < unsigned(module._memory_size())) {
+    const address = Math.max(0, execution.fault.address - 16);
+    const length = Math.min(64, unsigned(module._memory_size()) - address);
+    execution.faultMemory = {address, bytes: Array.from(guestBytes(module, address, length))};
+  }
   send("startup-complete", {result: {state: execution.code === 1 ? "stopped-at-observation" : execution.code === 2 ? "guest-fault" : "budget-exhausted", manifest, ...execution, wasmMemoryBytes: module.HEAPU8.byteLength, authenticMenuDemonstrated: false, playableRaceDemonstrated: false}});
 }
 

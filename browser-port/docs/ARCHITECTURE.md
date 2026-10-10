@@ -61,9 +61,19 @@ flags are not used. Resource formats remain data, not translated instructions.
 
 ## Coverage limits
 
-The current float proof covers controlled finite SSE scalar/vector operations
-and exact x87 load/store round trips. 80-bit arithmetic, x87 status/control,
-MXCSR exception behavior, arbitrary NaN payloads, complete instruction-prefix
+The current float proof covers controlled finite SSE scalar/vector operations,
+exact normal/zero x87 load/store round trips, and x87 control-word initialization.
+WAIT, FNSTCW, FLDCW, FNCLEX, FNINIT and FNSTSW preserve explicit guest control,
+status and stack-top state. The reset control word is `0x037f`; the observed CRT
+requests 53-bit precision while preserving rounding and exception masks. Tests
+compare raw control/status words and memory with pinned Unicorn, including the
+CRT's `0x023f` word, exception clearing and exact stores under four rounding modes.
+This is an emulator reference, not a native hardware proof of reserved-bit values.
+The architectural reference is [Intel Volume 1, Chapter 8](https://cdrdv2-public.intel.com/782149/253665-sdm-vol-1.pdf).
+
+Rounded stores, nonfinite/denormal loads or stores, and pending unmasked x87
+exception delivery fail explicitly. Control-word support does not implement
+80-bit arithmetic. MXCSR exception behavior, arbitrary NaN payloads, complete instruction-prefix
 semantics, guest exceptions, multithreading, DLL loading, callbacks, and shaders
 are not validated. Unsupported required instructions/imports stop execution.
 Passing a short routine proves only those tested operations and input classes.
@@ -72,7 +82,8 @@ The decoder refuses partial instructions at a section boundary, even where the
 next virtual section is also executable. SSE2 scalar-double MOVSD is currently
 unsupported and is distinguished from the string instruction. Operand-size-16
 control transfers fail explicitly. POPFD restores ordinary arithmetic/DF flags
-and ignores reserved bits; control/debug/privilege changes remain unsupported.
+and the ID flag used to detect CPUID. It ignores reserved bits; other
+control/debug/privilege changes remain unsupported.
 These restrictions follow the
 [Intel instruction reference](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2b-manual.pdf)
 and isolated binary regressions, not assumptions about decompiler output.
@@ -85,6 +96,21 @@ heap ownership, TLS slots, critical-section recursion, process strings, module
 lookup and selected startup/timing APIs. Its contracts and unsupported behavior
 are detailed in [Win32 compatibility](WIN32_COMPATIBILITY.md). This profile is
 not a complete Windows environment, and no thread scheduler is provided.
+
+The guest's CPUID leaves 0 and 1 use the measured Unicorn 2.1.4
+`UC_CPU_X86_PENTIUM3` profile, including its hypervisor bit. Incoming ECX is
+ignored for these leaves; unknown requested leaves fault explicitly. This is a
+declared virtual baseline, not the host CPU or a physical Pentium 4 claim.
+The original CRT follows its normal non-SSE2 branch for this profile. Its CPU
+checks still execute; no branch or result flag in the game is patched. Other
+advertised instruction families still require translation coverage before use.
+The reference explicitly enables OS x87/SSE state (CR0.EM/TS clear, MP/NE set,
+CR4 bits 9/10 set). Selecting a model without that initialization caused the existing
+SIMD fixture to fail; the explicit state fixes that reference setup failure.
+Review also found that a clear CR0.NE suppressed Unicorn's native WAIT exception;
+three focused oracle tests now verify masked, unmasked and cleared exceptions.
+Model/API sources: [Unicorn CPU definitions](https://github.com/unicorn-engine/unicorn/blob/2.1.4/qemu/target/i386/cpu.c)
+and [Python controls](https://github.com/unicorn-engine/unicorn/blob/2.1.4/bindings/python/unicorn/unicorn_py3/unicorn.py).
 
 The entry-prefix test compares the actual original SEH/stack-probe instructions
 against Unicorn with explicit 32-bit CS/SS/DS/ES/FS descriptors, stopping before
@@ -100,6 +126,9 @@ Builds reject a source change during compilation. `startup.ps1 -FromTrace`
 adds observed executable addresses from the matching local trace to the ignored
 seed file; it never executes a runtime x86 decoder. Each failed probe records
 its exact build command and the latest 4,096 dispatch addresses.
+Node and browser exports include stack arguments and a 64-byte fault-memory
+window when the fault address is in bounds. These private artifacts are ignored;
+they must not be committed or uploaded.
 
 The intended path is original entry -> verified CRT/platform initialization ->
 static constructors -> actual application init -> genuine quick race. There are

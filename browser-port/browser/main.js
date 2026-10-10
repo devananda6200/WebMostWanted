@@ -54,7 +54,10 @@ function createWorker() {
     } else if (data.type === "startup-complete") {
       diagnostics.startup = data.result;
       setBusy(false);
-      status(`Translated startup probe: ${data.result.state}. See guest diagnostics.`, data.result.state !== "stopped-at-observation");
+      const message = data.result.fault
+        ? `Startup stopped after ${data.result.steps} dispatches: ${data.result.fault.message}.`
+        : `Translated startup probe: ${data.result.state}. See guest diagnostics.`;
+      status(message, data.result.state !== "stopped-at-observation");
     } else if (data.type === "test-case") {
       diagnostics.progress.completed++;
       diagnostics.progress.passed += Number(data.passed);

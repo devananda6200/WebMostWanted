@@ -45,7 +45,8 @@ def compile_fixture():
     names=['arithmetic','branch','memory','calls','callee','simd','x87_load_store',
            'add_flags','sub_flags','adc_flags','sbb_flags','byte_flags','shifts','copy',
            'unmapped','unsupported','code_write','indirect_missing','xchg_alias','partial_simd_store','stdcall_call','stdcall_callee',
-           'sse_movsd_unsupported','popfd_reserved','popfd_control_unsupported']
+           'sse_movsd_unsupported','popfd_reserved','popfd_control_unsupported',
+           'x87_control','x87_clear','x87_init','x87_wait','x87_rounded_store','cpuid_detect','cpu_features']
     command=[*linker_command(),'/machine:x86','/subsystem:console','/entry:arithmetic',
              '/nodefaultlib','/fixed','/base:0x1000000','/timestamp:0','/safeseh:no',
              f'/out:{exe}',*(f'/export:{name}' for name in names),str(obj)]
@@ -80,15 +81,29 @@ def case(image, name, args=(), flags=0x202, writes=(), code=None, regions=None, 
                                   {'address':STOP,'size':4096,'permissions':5}],
             'writes':[*((code_writes(image) if code is None else code)),
                       {'address':SP,'bytes':dwords(STOP,*args)},*writes],
-            'registers':registers,'eflags':flags,
+            'registers':registers,'eflags':flags,'fpuControl':0x037f,'fpuStatus':0,
             'xmm':[[0x3f800000+j+i for j in range(4)] for i in range(8)],
             'watches':watches or [{'address':DATA,'size':512},{'address':SP-256,'size':512}],
             'flagsMask':FLAGS,'maxSteps':100000}
 
 
+def configure_reference_cpu(u):
+    """Pinned CPU identity plus explicit OS-enabled x87/SSE reference state."""
+    u.ctl_set_cpu_model(x86.UC_CPU_X86_PENTIUM3)
+    # Selecting a model clears Unicorn's default CR4 SSE setup. A PE process
+    # starts after its OS enabled SSE; otherwise valid MOVUPS fixtures #UD.
+    # NE is required for native #MF delivery in protected mode; without it,
+    # Unicorn's legacy IRQ path can silently run past an unmasked FWAIT.
+    u.reg_write(x86.UC_X86_REG_CR0,(u.reg_read(x86.UC_X86_REG_CR0)|0x22)&~0xc)
+    u.reg_write(x86.UC_X86_REG_CR4,u.reg_read(x86.UC_X86_REG_CR4)|0x600)
+    u.reg_write(x86.UC_X86_REG_FPCW,0x037f)
+    u.reg_write(x86.UC_X86_REG_FPSW,0)
+
+
 def reference(c):
     """Isolated CPU emulator: mapped test bytes only; no Windows/syscalls/network."""
     u=Uc(UC_ARCH_X86,UC_MODE_32)
+    configure_reference_cpu(u)
     for reg in c['regions']:
         u.mem_map(reg['address'],reg['size'],reg['permissions'])
     for w in c['writes']:
@@ -96,6 +111,8 @@ def reference(c):
     for reg,value in zip(REG_IDS,c['registers']): u.reg_write(reg,value)
     for reg,lanes in zip(XMM_IDS,c['xmm']): u.reg_write(reg,sum(v<<(32*i) for i,v in enumerate(lanes)))
     u.reg_write(x86.UC_X86_REG_EFLAGS,c['eflags'])
+    u.reg_write(x86.UC_X86_REG_FPCW,c.get('fpuControl',0x037f))
+    u.reg_write(x86.UC_X86_REG_FPSW,c.get('fpuStatus',0))
     count=0
     def tick(_u,address,size,user):
         nonlocal count
@@ -107,6 +124,8 @@ def reference(c):
     c['expected']={'registers':[u.reg_read(r) for r in REG_IDS],
                    'eflags':u.reg_read(x86.UC_X86_REG_EFLAGS),'flagsMask':c.pop('flagsMask'),
                    'xmm':[[int(u.reg_read(r)>>(32*i))&0xffffffff for i in range(4)] for r in XMM_IDS],
+                   'fpuControl':u.reg_read(x86.UC_X86_REG_FPCW),
+                   'fpuStatus':u.reg_read(x86.UC_X86_REG_FPSW),
                    'memory':[{'address':w['address'],'bytes':list(u.mem_read(w['address'],w['size']))} for w in c.pop('watches')],
                    'referenceSteps':count}
     return c
@@ -133,6 +152,12 @@ def synthetic_cases(image):
     cases.append(reference(case(image,'xchg_alias',[DATA],writes=[{'address':DATA,'bytes':dwords(0x12345678)}])))
     cases.append(reference(case(image,'stdcall_call',[DATA])))
     cases.append(reference(case(image,'popfd_reserved',[0x20a])))
+    for flag in (0x202,0x200202):
+        c=case(image,f'cpuid_detect/{flag:x}',flags=flag);c['flagsMask']=FLAGS|0x200000
+        cases.append(reference(c))
+    for leaf in (0,1):
+        for subleaf in (0,0x202,0x6c65746e,0xffffffff):
+            cases.append(reference(case(image,f'cpu_features/{leaf}/{subleaf:x}',[leaf,subleaf])))
     # Finite, exactly representable SIMD operands avoid making a claim about
     # NaN payloads, MXCSR exceptions, or x87 extended arithmetic.
     values=[1.5,-2.0,3.25,0.125,2.0,4.0,-0.5,8.0,7.75]
@@ -141,6 +166,19 @@ def synthetic_cases(image):
     for i,v in enumerate([0.0,-0.0,1.5,-123.75,2**-100]):
         c=case(image,f'x87_load_store/{i}',[DATA,DATA+128],writes=[{'address':DATA,'bytes':list(struct.pack('<f',v))}])
         cases.append(reference(c))
+    for control in (0x037f,0x023f,0x027f,0x007f,0x003f,0x073f,0x0b3f,0x0f3f,0x037e):
+        c=case(image,f'x87_control/{control:x}',[DATA,DATA+128],
+               writes=[{'address':DATA,'bytes':list(struct.pack('<H',control))}])
+        cases.append(reference(c))
+    for status in (0x80ff,0xf5ff,0x017f):
+        c=case(image,f'x87_clear/{status:x}',[DATA]);c['fpuStatus']=status
+        cases.append(reference(c))
+    c=case(image,'x87_init',[DATA]);c['fpuStatus']=0x80ff;c['fpuControl']=0x037e
+    cases.append(reference(c))
+    for control in (0x023f,0x073f,0x0b3f,0x0f3f):
+        c=case(image,f'x87_load_store/control-{control:x}',[DATA,DATA+128],
+               writes=[{'address':DATA,'bytes':list(struct.pack('<f',1.5))}])
+        c['fpuControl']=control;cases.append(reference(c))
     return cases
 
 
@@ -198,6 +236,17 @@ def main():
     c['expectedFault']=1
     c['unchangedOnFault']=[{'address':DATA+4096-8,'bytes':[0xa5]*8}]
     faults.append(c)
+    c=case(fixture,'x87_wait');c['fpuControl']=0x037e;c['fpuStatus']=0x81;c['expectedFault']=2
+    c['expectedFpuOnFault']={'control':0x037e,'status':0x81,'depth':0};faults.append(c)
+    c=case(fixture,'x87_rounded_store',[DATA,DATA+128],writes=[
+        {'address':DATA,'bytes':list(struct.pack('<d',1/3))},{'address':DATA+128,'bytes':[0xa5]*4}])
+    c['fpuControl']=0x0b3f;c['expectedFault']=2
+    c['expectedFpuOnFault']={'control':0x0b3f,'status':0x3800,'depth':1}
+    c['unchangedOnFault']=[{'address':DATA+128,'bytes':[0xa5]*4}];faults.append(c)
+    c=case(fixture,'x87_load_store/denormal',[DATA,DATA+128],writes=[{'address':DATA,'bytes':[1,0,0,0]}])
+    c['expectedFault']=2;c['expectedFpuOnFault']={'control':0x037f,'status':0,'depth':0};faults.append(c)
+    c=case(fixture,'cpu_features/unknown',[2,0]);c['expectedFault']=2
+    c['expectedRegistersOnFault']=[2,0,*c['registers'][2:]];faults.append(c)
     write_json(ROOT/'build/fault-cases.json',{'schema':1,'cases':faults})
     suites=[{'id':'synthetic','module':'synthetic.js','cases':'synthetic-cases.json','faultCases':'fault-cases.json','input_sha256':fixture.sha256}]
     reports={'synthetic':report}
@@ -209,7 +258,7 @@ def main():
         write_json(ROOT/'build/real-cases.json',{'schema':1,'input_sha256':game.sha256,'routine':ROUTINE,'cases':cases})
         suites.append({'id':'real-routine','module':'real.js','cases':'real-cases.json','input_sha256':game.sha256})
     manifest={'schema':1,'kind':'differential-tests','built_at_utc':datetime.now(timezone.utc).isoformat(),
-              'toolchain':SDK_VERSION,'reference':'Unicorn 2.1.4 isolated x86 CPU; no native game execution',
+              'toolchain':SDK_VERSION,'reference':'Unicorn 2.1.4 UC_CPU_X86_PENTIUM3 isolated x86 CPU; no native game execution',
               'suites':suites,
               'artifact_sha256':{s['module'].replace('.js','.wasm'):hashlib.sha256((ROOT/'build'/s['module'].replace('.js','.wasm')).read_bytes()).hexdigest() for s in suites}}
     write_json(ROOT/'build/manifest.json',manifest)

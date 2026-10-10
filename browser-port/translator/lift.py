@@ -140,6 +140,8 @@ class Emitter:
             raise Unsupported('16-bit control/stack operand-size override')
         if m == "nop":
             return ""
+        if m == "cpuid":
+            return "cpuid();"
         if m == "mov":
             return self.write(o[0], self.read(o[1]))
         if m in ("movzx", "movsx"):
@@ -243,6 +245,18 @@ class Emitter:
             return f"double v=as_float({self.lane(o[1],0)});uint32_t out=(!std::isfinite(v)||v>=2147483648.0||v< -2147483648.0)?0x80000000u:uint32_t(int32_t(v));" + self.write(o[0],"out")
         if m == "cvtsi2ss" and o[1].size == 4:
             return self.write_lane(o[0],0,f"as_bits(float(sign({self.read(o[1])},32)))")
+        if m in ("wait", "fwait"):
+            return "fwait();"
+        if m == "fninit":
+            return "finit();"
+        if m == "fnclex":
+            return "fpu_status&=~0x80ffu;"
+        if m == "fnstcw" and o[0].type == X86_OP_MEM and o[0].size == 2:
+            return self.write(o[0], "fpu_control")
+        if m == "fldcw" and o[0].type == X86_OP_MEM and o[0].size == 2:
+            return f"fldcw({self.address(o[0])});"
+        if m == "fnstsw" and o[0].size == 2:
+            return self.write(o[0], "fpu_status")
         if m == "fld" and o[0].type == X86_OP_MEM and o[0].size in (4,8):
             return f"fpush(fload({self.address(o[0])},{o[0].size*8}));"
         if m in ("fld1", "fldz"):

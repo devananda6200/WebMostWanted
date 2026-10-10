@@ -4,7 +4,7 @@ import struct
 from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE, UC_HOOK_MEM_INVALID
 from unicorn import x86_const as x86
 from tools.toolchain import ROOT
-from tools.build_tests import REG_IDS, XMM_IDS, write_json
+from tools.build_tests import REG_IDS, XMM_IDS, write_json, configure_reference_cpu
 
 
 def main():
@@ -12,6 +12,7 @@ def main():
     c=manifest['case']
     stop=next(i['gateway'] for i in manifest['imports'] if i['name']=='KERNEL32.dll!GetVersionExA')
     u=Uc(UC_ARCH_X86,UC_MODE_32)
+    configure_reference_cpu(u)
     for region in c['regions']: u.mem_map(region['address'],region['size'],region['permissions'])
     u.mem_write(manifest['image']['address'],(ROOT/'build'/manifest['image']['url']).read_bytes())
     for w in c['writes']: u.mem_write(w['address'],bytes(w['bytes']))

@@ -6,6 +6,11 @@
 constexpr uint32_t SP=0x00100800, DATA=0x00200000, RETURN=0x00401000;
 static uint32_t tests=0;
 static uint16_t observed_decode[256],observed_types[256];
+static uint16_t observed_lower[768],observed_upper[768];
+static uint32_t tick_first,tick_last,tick_samples;
+static double tick_elapsed_ms;
+struct BestFitObservation { uint32_t result,used,error; uint8_t output[16]; };
+static BestFitObservation observed_bestfit[8];
 static uint32_t invoke(const char* name,std::initializer_list<uint32_t> args={}) {
     guest::r[4]=SP; guest::wr(SP,RETURN,32);
     uint32_t p=SP+4; for(uint32_t value:args) { guest::wr(p,value,32);p+=4; }
@@ -372,6 +377,15 @@ static void nls_repertoire_contract() {
     assert(invoke("WideCharToMultiByte",{1252,0x400,DATA+512,256,DATA+1536,256,0,DATA+2048})==256);
     for(unsigned i=0;i<256;++i) assert(guest::memory[DATA+1536+i]==i);
     assert(!guest::rd(DATA+2048,32));
+    const uint32_t locales[]={0,0x409,0x7f};
+    for(unsigned i=0;i<3;++i) {
+        assert(invoke("LCMapStringW",{locales[i],0x100,DATA+512,256,DATA+2048,256})==256);
+        std::memcpy(observed_lower+i*256,guest::memory+DATA+2048,512);
+        assert(invoke("LCMapStringW",{locales[i],0x200,DATA+512,256,DATA+2048,256})==256);
+        std::memcpy(observed_upper+i*256,guest::memory+DATA+2048,512);
+        assert(invoke("WideCharToMultiByte",{1252,0,DATA+2048,256,DATA+3072,256,0,DATA+3584})==256);
+        assert(guest::memory[DATA+3072+131]==0x83 && !guest::rd(DATA+3584,32));
+    }
     ++tests;
 }
 static void classification_and_inverse_failures() {
@@ -396,15 +410,287 @@ static void classification_and_inverse_failures() {
     assert(win32::dispatch("MultiByteToWideChar",next));assert(guest::error==5 && next==123);
     ++tests;
 }
+static void case_mapping_contract() {
+    fresh();constexpr uint32_t OUT=DATA+512;
+    wide_at(DATA,{0});guest::wr(OUT,0xcccccccc,32);
+    assert(invoke("LCMapStringW",{0,0x100,DATA,1,0,0})==1);
+    assert(invoke("LCMapStringW",{0,0x100,DATA,1,OUT,1})==1);
+    assert(guest::rd(OUT,16)==0 && guest::rd(OUT+2,16)==0xcccc);
+    wide_at(DATA,{'a',0xdf,0xb5,0x192,0xff,0});
+    const uint16_t upper[]={'A',0xdf,0xb5,0x191,0x178,0};
+    assert(invoke("LCMapStringW",{0,0x200,DATA,0xffffffffu,0xdeadbeef,0})==6);
+    assert(invoke("LCMapStringW",{0,0x200,DATA,0xfffffffeu,OUT,6})==6);
+    assert(!std::memcmp(guest::memory+OUT,upper,sizeof(upper)));
+    invoke("SetLastError",{777});
+    assert(invoke("LCMapStringW",{0,0x200,DATA,6,DATA,6})==6);
+    assert(!std::memcmp(guest::memory+DATA,upper,sizeof(upper)));
+    assert(invoke("GetLastError")==777);
+    wide_at(DATA,{'A',0xc9,0x178,0x152,0,'B'});
+    const uint16_t lower[]={'a',0xe9,0xff,0x153,0,'b'};
+    assert(invoke("LCMapStringW",{0x409,0x100,DATA,6,OUT,6})==6);
+    assert(!std::memcmp(guest::memory+OUT,lower,sizeof(lower)));
+    guest::wr(OUT,0xcccccccc,32);
+    assert(!invoke("LCMapStringW",{0,0x100,DATA,6,OUT,2}));assert(invoke("GetLastError")==122);
+    assert(guest::rd(OUT,32)==0xcccccccc);
+    assert(!invoke("LCMapStringW",{0,0x100,DATA,0,OUT,8}));assert(invoke("GetLastError")==87);
+    assert(!invoke("LCMapStringW",{0,0x100,DATA,1,0,8}));assert(invoke("GetLastError")==87);
+    assert(!invoke("LCMapStringW",{0,0x100,DATA,1,OUT,0xffffffffu}));assert(invoke("GetLastError")==87);
+    ++tests;
+}
+static void case_mapping_failures() {
+    const uint32_t cases[][3]={{0x41f,0x100,'I'},{0,0x400,'A'},{0,0x300,'A'},
+                              {0,0x100,0x2603},{0,0x200,0xd800}};
+    for(const auto& c:cases) {
+        fresh();guest::wr(DATA,c[2],16);guest::r[4]=SP;guest::wr(SP,RETURN,32);
+        uint32_t a[6]={c[0],c[1],DATA,1,DATA+512,8};
+        for(unsigned i=0;i<6;++i) guest::wr(SP+4+i*4,a[i],32);
+        guest::wr(DATA+512,0xcccccccc,32);uint32_t next=123;
+        assert(win32::dispatch("LCMapStringW",next));assert(guest::error==5 && next==123 && guest::r[4]==SP);
+        assert(guest::memory[DATA+512]==0xcc);
+    }
+    fresh();wide_at(DATA,{'A','B'});guest::r[4]=SP;guest::wr(SP,RETURN,32);
+    uint32_t a[6]={0,0x100,DATA,2,DATA+8190,2};
+    for(unsigned i=0;i<6;++i) guest::wr(SP+4+i*4,a[i],32);
+    guest::wr(DATA+8190,0xcccc,16);uint32_t next=123;
+    assert(win32::dispatch("LCMapStringW",next));assert(guest::error==1 && next==123 && guest::r[4]==SP);
+    assert(guest::memory[DATA+8190]==0xcc);
+    ++tests;
+}
+static void observed_bestfit_contract() {
+    fresh();constexpr uint32_t OUT=DATA+512,USED=DATA+1024,DEFAULT=DATA+1028;
+    // Order matches the eight authored f-hook cases in the native probe.
+    const uint32_t modes[8][4]={
+        {0,1,0,0},{0,1,1,0},{0,1,1,DEFAULT},{0,1,1,0},
+        {0x400,1,0,0},{0x400,1,1,0},{0x400,1,1,DEFAULT},{0,2,1,0}};
+    const uint32_t expected_used[]={0,0,0,99,1,1,1,0};
+    const uint8_t expected_first[]={0xcc,0x83,0x83,0x83,0xcc,'?','!',0x83};
+    for(unsigned i=0;i<8;++i) {
+        wide_at(DATA,{0x191,'A'});std::memset(guest::memory+OUT,0xcc,16);
+        guest::wr(USED,99,32);guest::wr(DEFAULT,'!',8);invoke("SetLastError",{777});
+        auto& observation=observed_bestfit[i];
+        observation.result=invoke("WideCharToMultiByte",{1252,modes[i][0],DATA,modes[i][1],OUT,modes[i][2],modes[i][3],i==3?0:USED});
+        observation.used=guest::rd(USED,32);observation.error=invoke("GetLastError");
+        std::memcpy(observation.output,guest::memory+OUT,16);
+        assert(observation.result==(i==7?0u:1u));assert(observation.used==expected_used[i]);
+        assert(observation.error==(i==7?122u:777u));assert(observation.output[0]==expected_first[i]);
+        for(unsigned j=1;j<16;++j) assert(observation.output[j]==0xcc);
+    }
+    ++tests;
+}
+static void check_read_probe(uint32_t address,uint32_t length,uint32_t expected) {
+    invoke("SetLastError",{0x76543210});
+    for(unsigned i=0;i<8;++i) if(i!=4) guest::r[i]=0x11110000+i;
+    uint32_t flags=guest::flags=0xa47,ip=guest::ip;
+    assert(invoke("IsBadReadPtr",{address,length})==expected);
+    assert(!guest::error && guest::flags==flags && guest::ip==ip);
+    for(unsigned i=1;i<8;++i) if(i!=4) assert(guest::r[i]==0x11110000+i);
+    assert(win32::last_error==0x76543210);
+}
+static void memory_readability_contract() {
+    fresh();guest::wr(DATA,0x89abcdef,32);
+    for(uint32_t address:{0u,DATA,guest::SIZE,0xffffffffu}) check_read_probe(address,0,0);
+    check_read_probe(0,1,1);check_read_probe(DATA,32,0);check_read_probe(DATA+4092,8,0);
+    check_read_probe(DATA+8191,1,0);check_read_probe(DATA+8191,2,1);
+    guest::permissions[DATA/guest::PAGE+1]=0;
+    check_read_probe(DATA,4096,0);check_read_probe(DATA+4092,8,1);
+    for(uint8_t permissions:{uint8_t(1),uint8_t(2),uint8_t(4),uint8_t(5),uint8_t(7)}) {
+        guest::permissions[DATA/guest::PAGE]=permissions;
+        check_read_probe(DATA,32,(permissions&1)?0:1);
+        assert(guest::permissions[DATA/guest::PAGE]==permissions);
+    }
+    assert(guest::rd(DATA,32)==0x89abcdef);
+    assert(map_region(guest::SIZE-guest::PAGE,guest::PAGE,1));
+    check_read_probe(guest::SIZE-1,1,0);check_read_probe(guest::SIZE-1,2,1);
+    check_read_probe(guest::SIZE,1,1);check_read_probe(0xfffffff0,32,1);
+    check_read_probe(DATA,0xffffffffu,1);
+    fresh();uint32_t heap=invoke("HeapCreate",{0,0,0});uint32_t block=invoke("HeapAlloc",{heap,0,32});
+    check_read_probe(block,32,0);assert(invoke("HeapFree",{heap,0,block}));
+    // Readability is a page property, not proof of a live heap allocation.
+    check_read_probe(block,32,0);assert(invoke("HeapDestroy",{heap}));check_read_probe(block,32,1);
+    ++tests;
+}
+static void check_heap_validation(uint32_t heap,uint32_t options,uint32_t block,uint32_t expected) {
+    invoke("SetLastError",{0x43218765});uint32_t flags=guest::flags=0xa47;
+    guest::r[3]=0x11112222;guest::r[5]=0x33334444;guest::r[6]=0x55556666;guest::r[7]=0x77778888;
+    assert(invoke("HeapValidate",{heap,options,block})==expected);
+    assert(!guest::error && guest::flags==flags && win32::last_error==0x43218765);
+    assert(guest::r[3]==0x11112222 && guest::r[5]==0x33334444 && guest::r[6]==0x55556666 && guest::r[7]==0x77778888);
+}
+static void heap_validation_contract() {
+    fresh();uint32_t heap=invoke("HeapCreate",{0,0,0});
+    uint32_t a=invoke("HeapAlloc",{heap,0,32}),zero=invoke("HeapAlloc",{heap,0,0});
+    uint32_t other=invoke("HeapCreate",{0,0,0});
+    check_heap_validation(heap,0,0,1);check_heap_validation(heap,0,a,1);
+    check_heap_validation(heap,1,a,1);check_heap_validation(heap,0,zero,1);
+    check_heap_validation(heap,8,a,0);check_heap_validation(heap,0,a+8,0);
+    check_heap_validation(heap,0,DATA,0);check_heap_validation(other,0,a,0);
+    check_heap_validation(0,0,a,0);
+    guest::wr(a,0xdeadbeef,32);check_heap_validation(heap,0,a,1);assert(guest::rd(a,32)==0xdeadbeef);
+    assert(invoke("HeapFree",{heap,0,a}));check_heap_validation(heap,0,a,0);check_heap_validation(heap,0,0,1);
+    assert(invoke("HeapDestroy",{heap}));check_heap_validation(heap,0,0,0);
+    ++tests;
+}
+static void heap_validation_corruption() {
+    fresh();uint32_t heap=invoke("HeapCreate",{0,0,0}),index=win32::heap_index(heap);
+    uint32_t a=invoke("HeapAlloc",{heap,0,32}),b=invoke("HeapAlloc",{heap,0,48});
+    auto original=win32::blocks;size_t ia=0,ib=0,free_index=0;
+    for(size_t i=0;i<original.size();++i) {
+        if(original[i].address==a) ia=i;if(original[i].address==b) ib=i;
+        if(!original[i].used) free_index=i;
+    }
+    win32::blocks[ib].requested=win32::blocks[ib].size+1;
+    check_heap_validation(heap,0,a,1);check_heap_validation(heap,0,b,0);check_heap_validation(heap,0,0,0);
+    win32::blocks=original;win32::blocks[ia].size+=8;
+    check_heap_validation(heap,0,a,0);check_heap_validation(heap,0,0,0);
+    win32::blocks=original;win32::blocks[ia].address+=1;
+    check_heap_validation(heap,0,a+1,0);check_heap_validation(heap,0,0,0);
+    win32::blocks=original;win32::blocks.push_back(original[ia]);
+    check_heap_validation(heap,0,a,0);check_heap_validation(heap,0,0,0);
+    win32::blocks=original;win32::blocks[free_index].requested=1;
+    check_heap_validation(heap,0,a,1);check_heap_validation(heap,0,0,0);
+    win32::blocks=original;win32::blocks[free_index].size-=8;
+    check_heap_validation(heap,0,0,0);
+    win32::blocks=original;auto saved=win32::heaps[index];win32::heaps[index].committed+=1;
+    check_heap_validation(heap,0,a,0);check_heap_validation(heap,0,0,0);
+    win32::heaps[index]=saved;win32::heaps[index].committed+=guest::PAGE;
+    check_heap_validation(heap,0,0,0);win32::heaps[index]=saved;
+    uint32_t page=(a-win32::ARENA_BEGIN)/guest::PAGE,owner=win32::owners[page];
+    win32::owners[page]=owner+1;check_heap_validation(heap,0,a,0);check_heap_validation(heap,0,0,0);
+    win32::owners[page]=owner;guest::permissions[a/guest::PAGE]=1;
+    check_heap_validation(heap,0,a,0);check_heap_validation(heap,0,0,0);
+    guest::permissions[a/guest::PAGE]=3;
+    win32::blocks.push_back({a,8,index+1,8,true});check_heap_validation(heap,0,a,0);check_heap_validation(heap,0,0,0);
+    win32::blocks=original;check_heap_validation(heap,0,a,1);check_heap_validation(heap,0,0,1);
+    ++tests;
+}
+static void processor_feature_contract() {
+    fresh();assert(win32::supports("IsProcessorFeaturePresent"));
+    assert(win32::supports("KERNEL32.dll!IsProcessorFeaturePresent"));
+    for(unsigned i=0;i<8;++i) guest::r[i]=0x11110000+i;
+    guest::flags=0xa47;win32::last_error=0x76543210;
+    uint32_t ip=guest::ip;
+    assert(invoke("IsProcessorFeaturePresent",{0})==0);
+    assert(guest::r[4]==SP+8 && guest::ip==ip && guest::flags==0xa47);
+    for(unsigned i=1;i<8;++i) if(i!=4) assert(guest::r[i]==0x11110000+i);
+    assert(win32::last_error==0x76543210);
+    // Unmodeled features must stop without consuming the stdcall frame.
+    for(uint32_t feature:{1u,6u,0xffffffffu}) {
+        fresh();for(unsigned i=0;i<8;++i) guest::r[i]=0x22220000+i;
+        guest::r[4]=SP;guest::wr(SP,RETURN,32);guest::wr(SP+4,feature,32);
+        guest::flags=0xa47;win32::last_error=0x76543210;
+        uint32_t saved[8];std::memcpy(saved,guest::r,sizeof(saved));
+        uint32_t next=0xfeedbeef;
+        assert(win32::dispatch("IsProcessorFeaturePresent",next));
+        assert(guest::error==5 && guest::error_address==guest::ip);
+        assert(std::strstr(guest::error_text,"unmodeled virtual CPU feature"));
+        assert(std::strstr(guest::error_text,std::to_string(feature).c_str()));
+        assert(next==0xfeedbeef && !std::memcmp(saved,guest::r,sizeof(saved)));
+        assert(guest::flags==0xa47 && win32::last_error==0x76543210);
+    }
+    ++tests;
+}
+static void exception_filter_registration_contract() {
+    fresh();assert(win32::supports("SetUnhandledExceptionFilter"));
+    assert(!win32::supports("UnhandledExceptionFilter"));
+    uint32_t previous=0;
+    for(uint32_t callback:{0u,0x00402000u,0x00402000u,DATA,0xffffffffu,0u,0u}) {
+        for(unsigned i=0;i<8;++i) guest::r[i]=0x33330000+i;
+        guest::flags=0xa47;win32::last_error=0x76543210;
+        assert(invoke("SetUnhandledExceptionFilter",{callback})==previous);
+        assert(win32::unhandled_exception_filter==callback);
+        assert(guest::r[4]==SP+8 && guest::flags==0xa47);
+        for(unsigned i=1;i<8;++i) if(i!=4) assert(guest::r[i]==0x33330000+i);
+        assert(win32::last_error==0x76543210);
+        previous=callback;
+    }
+    // Registration permits unmapped/non-executable addresses without calling them.
+    assert(!guest::permissions[0x00402000/guest::PAGE]);
+    assert(invoke("SetUnhandledExceptionFilter",{0x00402000})==0);
+    win32::reset(0x00400000);
+    assert(invoke("SetUnhandledExceptionFilter",{DATA})==0);
+    // A truncated call frame cannot replace the previously registered filter.
+    guest::r[4]=guest::SIZE-4;uint32_t next=0xfeedbeef;
+    assert(win32::dispatch("SetUnhandledExceptionFilter",next));
+    assert(guest::error==1 && guest::r[4]==guest::SIZE-4 && next==0xfeedbeef);
+    assert(win32::unhandled_exception_filter==DATA);
+    // Stored callbacks never handle or clear runtime faults implicitly.
+    fresh();invoke("SetUnhandledExceptionFilter",{0x00402000});
+    guest::fault(5,guest::ip,"authored exception-delivery barrier");
+    assert(win32::unhandled_exception_filter==0x00402000 && guest::error==5);
+    assert(!win32::dispatch("UnhandledExceptionFilter",next));
+    assert(guest::error==5 && !std::strcmp(guest::error_text,"authored exception-delivery barrier"));
+    ++tests;
+}
+static void tick_clock_contract() {
+    fresh();assert(win32::supports("GetTickCount"));
+    double epoch=win32::boot_epoch_ms;
+    invoke("QueryPerformanceCounter",{DATA});uint64_t qpc_before=read64(DATA);
+    for(unsigned i=0;i<8;++i) guest::r[i]=0x44440000+i;
+    guest::flags=0xa47;win32::last_error=0x76543210;
+    tick_first=tick_last=invoke("GetTickCount");tick_samples=1;
+    assert(guest::r[4]==SP+4 && guest::flags==0xa47);
+    for(unsigned i=1;i<8;++i) if(i!=4) assert(guest::r[i]==0x44440000+i);
+    assert(win32::last_error==0x76543210);
+    invoke("QueryPerformanceCounter",{DATA});uint64_t qpc_after=read64(DATA);
+    assert(tick_first>=win32::tick_count_from_elapsed(double(qpc_before)/1000.0-epoch));
+    // QPC truncates microseconds, so its upper bound includes one microsecond.
+    assert(tick_first<=win32::tick_count_from_elapsed(double(qpc_after+1)/1000.0-epoch));
+    double started=emscripten_get_now();
+    while(tick_last==tick_first && tick_samples<100000 && emscripten_get_now()-started<250) {
+        uint32_t next=invoke("GetTickCount");++tick_samples;
+        assert(next>=tick_last);tick_last=next;
+    }
+    tick_elapsed_ms=emscripten_get_now()-started;assert(tick_last>tick_first);
+    win32::reset(0x00400000);
+    assert(win32::boot_epoch_ms==epoch && invoke("GetTickCount")>=tick_last);
+    ++tests;
+}
+static void tick_clock_rollover() {
+    fresh();win32::last_error=0x76543210;
+    struct TickCase { double milliseconds;uint32_t expected; };
+    for(auto sample:{TickCase{0,0},TickCase{0.999,0},TickCase{1,1},
+                    TickCase{4294967295.75,0xffffffffu},TickCase{4294967296.0,0},
+                    TickCase{4294967297.75,1},TickCase{8589934592.0+123.5,123}}) {
+        assert(win32::tick_count_from_elapsed(sample.milliseconds)==sample.expected);
+        assert(!guest::error && win32::last_error==0x76543210);
+    }
+    assert(uint32_t(win32::tick_count_from_elapsed(4294967297.0)-
+                    win32::tick_count_from_elapsed(4294967295.0))==2);
+    for(double invalid:{-1.0,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
+        fresh();win32::last_error=0x76543210;
+        win32::tick_count_from_elapsed(invalid);
+        assert(guest::error==5 && win32::last_error==0x76543210);
+    }
+    ++tests;
+}
 int main() {
     version_contract();heap_contract();heap_growth_and_limits();tls_contract();clock_contract();failures_do_not_succeed();
     module_registry_contract();critical_section_contract();startup_information_contract();
     command_line_and_module_path_contract();environment_block_contract();
     encoding_information_contract();wide_conversion_contract();wide_conversion_failures();
     multibyte_conversion_contract();classification_contract();nls_repertoire_contract();classification_and_inverse_failures();
+    case_mapping_contract();case_mapping_failures();
+    observed_bestfit_contract();
+    memory_readability_contract();
+    heap_validation_contract();heap_validation_corruption();
+    processor_feature_contract();
+    exception_filter_registration_contract();
+    tick_clock_contract();tick_clock_rollover();
     std::printf("{\"status\":\"passed\",\"groups\":%u,\"scope\":\"Win32 contract tests in Wasm\",\"cp1252_decode\":[",tests);
     for(unsigned i=0;i<256;++i) std::printf("%s%u",i?",":"",observed_decode[i]);
     std::printf("],\"ctype1\":[");
     for(unsigned i=0;i<256;++i) std::printf("%s%u",i?",":"",observed_types[i]);
-    std::printf("]}\n");
+    std::printf("],\"lowercase\":[");
+    for(unsigned i=0;i<768;++i) std::printf("%s%u",i?",":"",observed_lower[i]);
+    std::printf("],\"uppercase\":[");
+    for(unsigned i=0;i<768;++i) std::printf("%s%u",i?",":"",observed_upper[i]);
+    std::printf("],\"bestfit_observations\":[");
+    for(unsigned i=0;i<8;++i) {
+        const auto& o=observed_bestfit[i];
+        std::printf("%s{\"return\":%u,\"used_default\":%u,\"last_error\":%u,\"output_hex\":\"",i?",":"",o.result,o.used,o.error);
+        for(uint8_t byte:o.output) std::printf("%02x",byte);
+        std::printf("\"}");
+    }
+    std::printf("],\"tick_clock\":{\"first_ms\":%u,\"last_ms\":%u,\"samples\":%u,\"observed_elapsed_ms\":%.3f}}\n",
+                tick_first,tick_last,tick_samples,tick_elapsed_ms);
 }

@@ -24,12 +24,20 @@ const started=performance.now();
 const status=m._run(c.maxSteps,c.stop);
 const state={captured_at_utc:new Date().toISOString(),status,steps:m._get_steps(),elapsed_ms:performance.now()-started,
   eip:m._get_eip()>>>0,registers:Array.from({length:8},(_,i)=>m._get_reg(i)>>>0),eflags:m._get_flags()>>>0,
+  fpu:{control:m._get_fpu_control(),status:m._get_fpu_status(),depth:m._get_fpu_depth()},
   fault:{code:m._fault_code(),address:m._fault_address()>>>0,message:m.UTF8ToString(m._fault_text())},
   trace:Array.from({length:m._get_trace_count()},(_,i)=>m._get_trace(i)>>>0),
   wasm_memory_bytes:m.HEAPU8.byteLength,gameplay_demonstrated:false,manifest};
 const stack=state.registers[4];
 state.stack_words=stack+48<=memory.byteLength?Array.from({length:12},(_,i)=>new DataView(memory.buffer,memory.byteOffset+stack+i*4,4).getUint32(0,true)):[];
-state.reproduction={build:`.\\.venv\\Scripts\\python.exe -m tools.build_startup --limit ${manifest.provenance.instruction_limit} ${(manifest.provenance.seeds||[]).map(a=>'--seed 0x'+a.toString(16)).join(' ')}`,
+// Capture a small, private diagnostic window without changing guest state.
+// Faulting NLS/buffer operations need their actual input bytes, not an inferred
+// value based only on the disassembled call site.
+if(state.fault.code && state.fault.address<memory.byteLength){
+  const address=Math.max(0,state.fault.address-16);
+  state.fault_memory={address,bytes:Array.from(memory.subarray(address,Math.min(address+64,memory.byteLength)))};
+}
+state.reproduction={build:`.\\.venv\\Scripts\\python.exe -m tools.build_startup --limit ${manifest.provenance.instruction_limit} --max-steps ${c.maxSteps} ${(manifest.provenance.seeds||[]).map(a=>'--seed 0x'+a.toString(16)).join(' ')}`,
   run:'.\\.tools\\emsdk-4.0.23\\node\\22.16.0_64bit\\bin\\node.exe tests/run_startup.mjs'};
 await fs.writeFile(path.join(root,'artifacts/startup-node.json'),JSON.stringify(state,null,2)+'\n');
 await fs.appendFile(path.join(root,'artifacts/startup-history.jsonl'),JSON.stringify(state)+'\n');

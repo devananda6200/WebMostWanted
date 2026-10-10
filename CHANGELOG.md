@@ -4,6 +4,24 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-11T01:47:07+05:30 — execute early game constructors in Wasm
+
+- Changed: Added verified CP1252 casing/best-fit conversion, heap validation,
+  pointer queries, clocks, exception-filter registration, x87 control/status,
+  declared CPUID profile, bounded constructor seeds and richer fault exports.
+  Affected browser-port runtime, translator, test tools, worker and documentation.
+- Why: Resolve observed CRT barriers and execute original constructors without
+  skipping initialization or changing game state to claim success.
+- Validation: 37 Python tests, 712 Node/browser binary cases, 28 Win32 Wasm
+  groups, 2,048 native NLS values and eight conversion cases passed. Browser
+  startup reaches 1,166,682 dispatches and IDIV at 0x00464f34, matching Node.
+- Corrections: Enabled explicit OS SSE/x87 exception state in the reference;
+  added three oracle regressions. Expanded bounded instruction coverage and
+  dispatch budget after observing entry coverage loss and a finite heap fill.
+- Limitations: M1 complete for tested subset; M2 partial. No menu, game frame,
+  race, driving or completion. Native historical XP equivalence and full x87
+  arithmetic remain unverified. Human review pending; all evidence stays local.
+
 ## 2026-10-11T01:11:29+05:30 — verified CRT progress and translation corrections
 
 - Changed: Added process/heap/TLS/lock/startup/NLS contracts, entry-prefix oracle,

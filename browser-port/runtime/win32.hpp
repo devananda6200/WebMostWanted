@@ -27,7 +27,9 @@ inline std::vector<Block> blocks;
 inline uint32_t owners[ARENA_PAGES], last_error, module_base, process_heap;
 enum class ProcessString : uint8_t { Free, CommandLine, EnvironmentA, EnvironmentW };
 inline ProcessString process_strings[PROCESS_PAGES];
-inline uint32_t command_line;
+inline uint32_t command_line, unhandled_exception_filter;
+inline double boot_epoch_ms;
+inline bool clock_initialized;
 inline bool tls_used[64];
 inline uint32_t tls_values[64];
 struct Module { std::string name; uint32_t handle; };
@@ -39,6 +41,8 @@ struct CriticalSection { uint32_t address, owner, recursion; };
 inline std::vector<CriticalSection> critical_sections;
 
 inline void reset(uint32_t executable_base=0) {
+    // A Wasm module is one virtual boot; process resets preserve its uptime.
+    if(!clock_initialized) { boot_epoch_ms=emscripten_get_now();clock_initialized=true; }
     for(uint32_t i=0;i<ARENA_PAGES;++i)
         if(owners[i]) guest::permissions[ARENA_BEGIN/guest::PAGE+i]=0;
     for(uint32_t i=0;i<PROCESS_PAGES;++i)
@@ -46,9 +50,18 @@ inline void reset(uint32_t executable_base=0) {
     std::memset(heaps,0,sizeof(heaps)); std::memset(owners,0,sizeof(owners));
     std::memset(tls_used,0,sizeof(tls_used)); std::memset(tls_values,0,sizeof(tls_values));
     std::memset(process_strings,0,sizeof(process_strings)); command_line=0;
+    unhandled_exception_filter=0;
     blocks.clear(); last_error=process_heap=0; module_base=executable_base;
     modules.clear(); exports.clear(); dynamic_error.clear();
     critical_sections.clear();
+}
+
+inline uint32_t tick_count_from_elapsed(double milliseconds) {
+    if(!std::isfinite(milliseconds) || milliseconds<0) {
+        guest::fault(5,guest::ip,"GetTickCount invalid monotonic elapsed time");return 0;
+    }
+    // Convert only after reducing the value into the uint32 range.
+    return uint32_t(std::fmod(std::floor(milliseconds),4294967296.0));
 }
 
 inline uint32_t process_string(ProcessString kind) {
@@ -134,6 +147,9 @@ inline uint32_t wide_to_multi(const uint32_t* a) {
             guest::fault(5,uint32_t(address),"WideCharToMultiByte XP surrogate conversion is unsupported");return 0;
         }
         int byte=cp1252_byte(character);
+        // The observed CRT uppercases U+0192 to U+0191 before converting its
+        // table back to CP1252. This one best-fit pair is verified natively.
+        if(byte<0 && character==0x0191 && !(a[1]&WC_NO_BEST_FIT_CHARS)) byte=0x83;
         if(byte<0) {
             if(!(a[1]&WC_NO_BEST_FIT_CHARS)) {
                 guest::fault(5,uint32_t(address),"WideCharToMultiByte requires unimplemented CP1252 best-fit mapping");return 0;
@@ -243,9 +259,78 @@ inline uint32_t string_type(const uint32_t* a) {
     std::memcpy(guest::memory+a[3],types.data(),bytes);return 1;
 }
 
+inline uint16_t cp1252_case(uint16_t character,bool upper) {
+    // Non-linguistic LCMapString casing, verified for all 256 input characters.
+    // Sharp S and micro sign stay unchanged in this mode; f-hook uppercases
+    // to U+0191, which is a valid Unicode output outside the input repertoire.
+    if(upper) {
+        if((character>='a' && character<='z') ||
+           (character>=0xe0 && character<=0xfe && character!=0xf7)) return character-32;
+        switch(character) {
+            case 0x192:return 0x191;case 0x161:return 0x160;case 0x153:return 0x152;
+            case 0x17e:return 0x17d;case 0xff:return 0x178;
+        }
+    } else {
+        if((character>='A' && character<='Z') ||
+           (character>=0xc0 && character<=0xde && character!=0xd7)) return character+32;
+        switch(character) {
+            case 0x160:return 0x161;case 0x152:return 0x153;case 0x17d:return 0x17e;
+            case 0x178:return 0xff;
+        }
+    }
+    return character;
+}
+inline uint32_t map_string(const uint32_t* a) {
+    // Only locale 0 from the observed CRT call, explicit en-US, and invariant
+    // have been checked. No host locale lookup occurs during guest execution.
+    if(a[0]!=0 && a[0]!=0x409 && a[0]!=0x7f) {
+        dynamic_error="LCMapStringW unverified locale: "+std::to_string(a[0]);
+        guest::fault(5,guest::ip,dynamic_error.c_str());return 0;
+    }
+    if(a[1]!=0x100 && a[1]!=0x200) {
+        guest::fault(5,guest::ip,"LCMapStringW unsupported flags; only plain lower/uppercase implemented");return 0;
+    }
+    int32_t count=int32_t(a[3]),capacity=int32_t(a[5]);
+    if(!a[2] || !count || capacity<0 || (capacity && !a[4])) {
+        last_error=INVALID_PARAMETER;return 0;
+    }
+    constexpr uint32_t limit=32768;
+    if(count>int32_t(limit)) { guest::fault(5,guest::ip,"LCMapStringW input exceeds 32768 UTF-16 units");return 0; }
+    std::vector<uint16_t> converted;converted.reserve(count>0?uint32_t(count):64);
+    bool terminated=false;
+    for(uint32_t i=0;i<(count<0?limit:uint32_t(count));++i) {
+        uint64_t address=uint64_t(a[2])+uint64_t(i)*2;
+        if(address+2>guest::SIZE) { guest::fault(1,a[2],"LCMapStringW input exceeds guest memory");return 0; }
+        uint16_t character=uint16_t(guest::rd(uint32_t(address),16));if(guest::error) return 0;
+        if(cp1252_byte(character)<0) {
+            guest::fault(5,uint32_t(address),"LCMapStringW character outside verified CP1252 repertoire");return 0;
+        }
+        converted.push_back(cp1252_case(character,a[1]==0x200));
+        if(count<0 && !character) { terminated=true;break; }
+    }
+    if(count<0 && !terminated) { guest::fault(5,a[2],"LCMapStringW unterminated input exceeds supported bound");return 0; }
+    uint32_t required=uint32_t(converted.size());
+    if(!capacity) return required;
+    // The reference leaves an insufficient destination unchanged for these
+    // flags. In-place conversion is permitted, after reading the whole input.
+    if(uint32_t(capacity)<required) { last_error=INSUFFICIENT_BUFFER;return 0; }
+    if(!guest::access(a[4],required*2,2)) return 0;
+    std::memcpy(guest::memory+a[4],converted.data(),required*2);return required;
+}
+
 inline uint32_t heap_index(uint32_t handle) {
     uint32_t index=handle-HEAP_HANDLE_BASE;
     return index<32 && heaps[index].active ? index : 0xffffffffu;
+}
+inline uint32_t bad_read_pointer(uint32_t address,uint32_t length) {
+    // Query only: unlike guest::access, unreadable memory must return TRUE
+    // without creating a guest fault or changing the thread's last error.
+    if(!length) return 0;
+    uint64_t end=uint64_t(address)+length;
+    if(!address || end>guest::SIZE) return 1;
+    for(uint32_t page=address/guest::PAGE;page<=(end-1)/guest::PAGE;++page)
+        if(!(guest::permissions[page]&1)) return 1;
+    return 0;
 }
 inline void coalesce() {
     std::sort(blocks.begin(),blocks.end(),[](const Block& a,const Block& b){return a.address<b.address;});
@@ -326,6 +411,66 @@ inline uint32_t heap_size(uint32_t handle,uint32_t options,uint32_t address) {
     for(const Block& block:blocks)
         if(block.heap==index && block.used && block.address==address) return block.requested;
     return 0xffffffffu;
+}
+inline bool heap_header_valid(uint32_t index) {
+    const Heap& heap=heaps[index];
+    return heap.active && heap.maximum && heap.maximum<=ARENA_END-ARENA_BEGIN &&
+        !(heap.maximum%guest::PAGE) && heap.committed && !(heap.committed%guest::PAGE) &&
+        heap.committed<=heap.maximum && (heap.fixed || heap.maximum==ARENA_END-ARENA_BEGIN);
+}
+inline bool heap_block_valid(const Block& block,uint32_t index) {
+    uint64_t end=uint64_t(block.address)+block.size;
+    if(block.heap!=index || !block.size || block.address%8 || block.size%8 ||
+       block.address<ARENA_BEGIN || end>ARENA_END) return false;
+    if(block.used) {
+        if(block.requested>block.size ||
+           uint64_t(block.size)!=((std::max(uint64_t(block.requested),uint64_t(1))+7)&~uint64_t(7)) ||
+           (heaps[index].fixed && block.requested>=0x7fff8)) return false;
+    } else if(block.requested) return false;
+    for(uint32_t page=block.address/guest::PAGE;page<=(end-1)/guest::PAGE;++page)
+        if(owners[page-ARENA_BEGIN/guest::PAGE]!=index+1 || guest::permissions[page]!=3) return false;
+    return true;
+}
+inline uint32_t heap_validate(uint32_t handle,uint32_t options,uint32_t address) {
+    // Per Win32, every outcome preserves last error. Invalid metadata returns
+    // FALSE without repairing it or dereferencing the candidate guest pointer.
+    uint32_t index=heap_index(handle);
+    if(index==0xffffffffu || (options&~HEAP_NO_SERIALIZE) || !heap_header_valid(index)) return 0;
+    if(address) {
+        const Block* found=nullptr;
+        for(const Block& block:blocks) if(block.heap==index && block.address==address) {
+            if(found) return 0;
+            found=&block;
+        }
+        if(!found || !found->used || !heap_block_valid(*found,index)) return 0;
+        uint64_t end=uint64_t(found->address)+found->size;
+        for(const Block& block:blocks) if(&block!=found && block.size &&
+            uint64_t(block.address)<end && uint64_t(block.address)+block.size>found->address) return 0;
+        return 1; // Only this allocation's control structures were checked.
+    }
+    uint64_t committed=0,covered=0;
+    for(uint32_t page=0;page<ARENA_PAGES;++page) if(owners[page]==index+1) {
+        if(guest::permissions[ARENA_BEGIN/guest::PAGE+page]!=3) return 0;
+        committed+=guest::PAGE;
+    }
+    if(committed!=heaps[index].committed) return 0;
+    std::vector<const Block*> ordered;
+    for(const Block& block:blocks) {
+        if(block.heap==index) {
+            if(!heap_block_valid(block,index)) return 0;
+            ordered.push_back(&block);covered+=block.size;
+        } else {
+            uint64_t end=std::min(uint64_t(block.address)+block.size,uint64_t(ARENA_END));
+            uint64_t begin=std::max(uint64_t(block.address),uint64_t(ARENA_BEGIN));
+            if(begin<end) for(uint32_t page=uint32_t(begin)/guest::PAGE;page<=(end-1)/guest::PAGE;++page)
+                if(owners[page-ARENA_BEGIN/guest::PAGE]==index+1) return 0;
+        }
+    }
+    if(covered!=committed) return 0;
+    std::sort(ordered.begin(),ordered.end(),[](const Block* a,const Block* b){return a->address<b->address;});
+    for(size_t i=1;i<ordered.size();++i)
+        if(uint64_t(ordered[i-1]->address)+ordered[i-1]->size>ordered[i]->address) return 0;
+    return 1;
 }
 inline uint32_t heap_free(uint32_t handle,uint32_t options,uint32_t address) {
     uint32_t index=heap_index(handle);
@@ -424,6 +569,7 @@ inline int argument_count(const char* name) {
     if(!std::strcmp(name,"GetVersionExA") || !std::strcmp(name,"GetModuleHandleA") ||
        !std::strcmp(name,"GetStartupInfoA") || !std::strcmp(name,"GetStdHandle") ||
        !std::strcmp(name,"GetFileType") || !std::strcmp(name,"SetHandleCount") ||
+       !std::strcmp(name,"IsProcessorFeaturePresent") || !std::strcmp(name,"SetUnhandledExceptionFilter") ||
        !std::strcmp(name,"FreeEnvironmentStringsA") || !std::strcmp(name,"FreeEnvironmentStringsW") ||
        !std::strcmp(name,"SetLastError") || !std::strcmp(name,"HeapDestroy") ||
        !std::strcmp(name,"TlsGetValue") || !std::strcmp(name,"TlsFree") ||
@@ -432,17 +578,19 @@ inline int argument_count(const char* name) {
        !std::strcmp(name,"EnterCriticalSection") || !std::strcmp(name,"LeaveCriticalSection") ||
        !std::strcmp(name,"TryEnterCriticalSection") || !std::strcmp(name,"DeleteCriticalSection")) return 1;
     if(!std::strcmp(name,"TlsSetValue") || !std::strcmp(name,"GetProcAddress") ||
-       !std::strcmp(name,"InitializeCriticalSectionAndSpinCount") || !std::strcmp(name,"GetCPInfo")) return 2;
+       !std::strcmp(name,"InitializeCriticalSectionAndSpinCount") || !std::strcmp(name,"GetCPInfo") ||
+       !std::strcmp(name,"IsBadReadPtr")) return 2;
     if(!std::strcmp(name,"HeapCreate") || !std::strcmp(name,"HeapAlloc") ||
-       !std::strcmp(name,"HeapFree") || !std::strcmp(name,"HeapSize") ||
+       !std::strcmp(name,"HeapFree") || !std::strcmp(name,"HeapSize") || !std::strcmp(name,"HeapValidate") ||
        !std::strcmp(name,"GetModuleFileNameA")) return 3;
     if(!std::strcmp(name,"GetLastError") || !std::strcmp(name,"GetCurrentThreadId") ||
        !std::strcmp(name,"GetCurrentProcessId") || !std::strcmp(name,"TlsAlloc") ||
        !std::strcmp(name,"GetProcessHeap") || !std::strcmp(name,"GetCommandLineA") ||
        !std::strcmp(name,"GetEnvironmentStrings") || !std::strcmp(name,"GetEnvironmentStringsA") ||
-       !std::strcmp(name,"GetEnvironmentStringsW") || !std::strcmp(name,"GetACP")) return 0;
+       !std::strcmp(name,"GetEnvironmentStringsW") || !std::strcmp(name,"GetACP") ||
+       !std::strcmp(name,"GetTickCount")) return 0;
     if(!std::strcmp(name,"WideCharToMultiByte")) return 8;
-    if(!std::strcmp(name,"MultiByteToWideChar")) return 6;
+    if(!std::strcmp(name,"MultiByteToWideChar") || !std::strcmp(name,"LCMapStringW")) return 6;
     if(!std::strcmp(name,"GetStringTypeW")) return 4;
     return -1;
 }
@@ -592,6 +740,8 @@ inline uint32_t proc_address(uint32_t handle,uint32_t address) {
         }
     } else if(!std::strcmp(name,"GetACP")) {
         result=ACP;
+    } else if(!std::strcmp(name,"IsBadReadPtr")) {
+        result=bad_read_pointer(args[0],args[1]);
     } else if(!std::strcmp(name,"GetCPInfo")) {
         if(!supported_code_page(args[0])) return true;
         if(!args[1]) last_error=INVALID_PARAMETER;
@@ -606,6 +756,8 @@ inline uint32_t proc_address(uint32_t handle,uint32_t address) {
         result=multi_to_wide(args);
     } else if(!std::strcmp(name,"GetStringTypeW")) {
         result=string_type(args);
+    } else if(!std::strcmp(name,"LCMapStringW")) {
+        result=map_string(args);
     } else if(!std::strcmp(name,"GetModuleHandleA")) {
         result=module_handle(args[0]);
     } else if(!std::strcmp(name,"GetProcAddress")) {
@@ -623,14 +775,28 @@ inline uint32_t proc_address(uint32_t handle,uint32_t address) {
     else if(!std::strcmp(name,"HeapAlloc")) result=heap_alloc(args[0],args[1],args[2]);
     else if(!std::strcmp(name,"HeapFree")) result=heap_free(args[0],args[1],args[2]);
     else if(!std::strcmp(name,"HeapSize")) result=heap_size(args[0],args[1],args[2]);
+    else if(!std::strcmp(name,"HeapValidate")) result=heap_validate(args[0],args[1],args[2]);
     else if(!std::strcmp(name,"HeapDestroy")) result=heap_destroy(args[0]);
     else if(!std::strcmp(name,"GetProcessHeap")) {
         if(!process_heap) process_heap=heap_create(0,4096,0);
         result=process_heap;
     } else if(!std::strcmp(name,"GetLastError")) result=last_error;
+    else if(!std::strcmp(name,"GetTickCount")) result=tick_count_from_elapsed(emscripten_get_now()-boot_epoch_ms);
     else if(!std::strcmp(name,"SetLastError")) { last_error=args[0]; has_result=false; }
+    else if(!std::strcmp(name,"SetUnhandledExceptionFilter")) {
+        // Registration stores a guest callback address; it does not invoke it.
+        result=unhandled_exception_filter;unhandled_exception_filter=args[0];
+    }
     else if(!std::strcmp(name,"GetCurrentThreadId") || !std::strcmp(name,"GetCurrentProcessId")) {
         result=1; // IDs of the one actual guest process and its one actual guest thread.
+    } else if(!std::strcmp(name,"IsProcessorFeaturePresent")) {
+        // The virtual CPU does not reproduce the Pentium FDIV precision erratum.
+        // Other feature answers need a verified guest capability contract.
+        if(args[0]) {
+            dynamic_error="IsProcessorFeaturePresent unmodeled virtual CPU feature "+std::to_string(args[0]);
+            guest::fault(5,guest::ip,dynamic_error.c_str());
+        }
+        result=0;
     } else if(!std::strcmp(name,"TlsAlloc")) {
         result=0xffffffffu;
         for(unsigned i=0;i<64;++i) if(!tls_used[i]) { tls_used[i]=true;tls_values[i]=0;result=i;break; }

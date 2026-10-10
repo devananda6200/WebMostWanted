@@ -26,6 +26,23 @@ def main():
             comparison = {"status": "passed" if matched else "failed", "compared_values": 512,
                           "reference_sha256": sha256(reference_path), "windows": reference["windows"],
                           "scope": "CP1252 decoding and CT_CTYPE1 for 256 characters; not a complete Windows or XP oracle"}
+            if "mapping_cases" in reference and "individual_case_mappings" in reference:
+                for flags, key in ((0x100, "lowercase"), (0x200, "uppercase")):
+                    expected = []
+                    for locale in (0, 0x409, 0x7f):
+                        case = next(c for c in reference["mapping_cases"] if c["case"] == f"repertoire-{locale:x}-{flags:x}")
+                        expected.extend(case["utf16_output"][:256])
+                    individual = next(c for c in reference["individual_case_mappings"] if c["flags"] == flags)
+                    matched = matched and observed[key] == expected and individual["lengths"] == [1] * 256
+                    matched = matched and [c[0] for c in individual["mapped"]] == expected[:256]
+                comparison.update(status="passed" if matched else "failed", compared_values=2048,
+                                  scope="CP1252 decode/classification and lower/uppercase at locales 0, 0x409, 0x7f; historical XP equivalence unverified")
+            bestfit = [c for c in reference["cases"] if c["case"].startswith("f-hook-")]
+            if len(bestfit) == 8 and "bestfit_observations" in observed:
+                fields = ("return", "used_default", "last_error", "output_hex")
+                expected = [{key: c[key] for key in fields} for c in bestfit]
+                matched = matched and observed["bestfit_observations"] == expected
+                comparison.update(status="passed" if matched else "failed", bestfit_cases=8)
     report = {"captured_at_utc": datetime.now(timezone.utc).isoformat(), "command": command,
               "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr,
               "wasm_sha256": sha256(output.with_suffix(".wasm")),

@@ -16,8 +16,9 @@ TEB=0x02500000
 IMPORT_BASE=0x03100000
 
 
-def prepare(limit=6000, extra_seeds=(), from_trace=False):
+def prepare(limit=8000, extra_seeds=(), from_trace=False, max_steps=2000000):
     started=time.perf_counter()
+    if not 1<=max_steps<=10000000: raise ValueError('Startup max_steps must be in 1..10000000')
     sources=('translator/lift.py','runtime/guest.hpp','runtime/win32.hpp','tools/build_startup.py','tools/build_tests.py','tools/toolchain.py')
     source_hashes={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in sources}
     image=PEImage(load_game_root()/'speed.exe')
@@ -49,9 +50,10 @@ def prepare(limit=6000, extra_seeds=(), from_trace=False):
             imports[address]=name
             struct.pack_into('<I',mapped,entry.address-image.base,address)
             iat.append({'iat':entry.address,'gateway':address,'name':name})
-    # This name is observed in the audited CRT's GetProcAddress request at
-    # 0x7ddc88. The gateway is a provided replacement API, not game code.
-    for name in ('KERNEL32.dll!InitializeCriticalSectionAndSpinCount',):
+    # These names are observed in the audited CRT's GetProcAddress requests
+    # (0x7ddc88 and 0x7cda33). Gateways provide replacement APIs, not game code.
+    for name in ('KERNEL32.dll!InitializeCriticalSectionAndSpinCount',
+                 'KERNEL32.dll!IsProcessorFeaturePresent'):
         if name not in imports.values():
             address=IMPORT_BASE+len(imports)*16
             imports[address]=name
@@ -69,7 +71,7 @@ def prepare(limit=6000, extra_seeds=(), from_trace=False):
              {'address':TEB,'size':0x1000,'permissions':3},
              {'address':STOP,'size':0x1000,'permissions':5},
              {'address':IMPORT_BASE,'size':((len(imports)*16+4095)//4096)*4096,'permissions':5}]
-    c={'id':'actual-pe-entry','entry':image.entry,'stop':STOP,'maxSteps':1000000,
+    c={'id':'actual-pe-entry','entry':image.entry,'stop':STOP,'maxSteps':max_steps,
        'regions':regions,'registers':[0,0,0,0,SP,0,0,0],'eflags':0x202,'fsBase':TEB,
        'writes':[{'address':SP,'bytes':dwords(STOP)},
                  {'address':TEB,'bytes':dwords(0xffffffff,STACK+0x10000,STACK)},
@@ -79,6 +81,7 @@ def prepare(limit=6000, extra_seeds=(), from_trace=False):
               'image':{'url':'game-image.bin','address':image.base,'sha256':hashlib.sha256(mapped).hexdigest()},
               'built_at_utc':datetime.now(timezone.utc).isoformat(),
               'provenance':{'executable_sha256':image.sha256,'entry':image.entry,
+                            'cpu_profile':'Unicorn 2.1.4 UC_CPU_X86_PENTIUM3 CPUID leaves 0/1; OS-enabled SSE',
                             'optimization':'-O0','build_elapsed_seconds':time.perf_counter()-started,
                             'instruction_count':report['instruction_count'],'instruction_limit':limit,'seeds':seeds,
                             'source_sha256':source_hashes},
@@ -95,8 +98,9 @@ def prepare(limit=6000, extra_seeds=(), from_trace=False):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--limit',type=int,default=6000)
+    parser.add_argument('--limit',type=int,default=8000)
     parser.add_argument('--seed',type=lambda x:int(x,0),action='append',default=[])
     parser.add_argument('--from-trace',action='store_true',help='Prioritize original instruction addresses from the matching last local execution trace')
+    parser.add_argument('--max-steps',type=int,default=2000000)
     args=parser.parse_args()
-    prepare(args.limit,args.seed,args.from_trace)
+    prepare(args.limit,args.seed,args.from_trace,args.max_steps)

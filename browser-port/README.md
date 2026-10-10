@@ -46,6 +46,8 @@ To build and probe the original entry path:
 .\scripts\startup.ps1
 # Incorporate observed executable addresses after an untranslated-target fault:
 .\scripts\startup.ps1 -FromTrace
+# Optional bounded probe settings (the current defaults):
+.\scripts\startup.ps1 -FromTrace -Limit 8000 -MaxSteps 2000000
 ```
 
 This currently returns a nonzero exit code at a required compatibility barrier.
@@ -54,9 +56,11 @@ browser. Restart the resource server after adding build filenames, and reload
 the browser after every rebuild; the worker verifies Wasm identity hashes.
 The current local seed file is retained in `generated/startup-seeds.json` and is
 bound to the audited executable hash. Each probe appends its source/build
-identity, stack words, bounded trace, and exact reproduction command to
+identity, stack words, a bounded fault-memory window, trace, and exact reproduction command to
 `artifacts/startup-history.jsonl`. This is a diagnostic build, not a performance
 build or a successful game launch.
+The current probe reaches original game constructors, then stops at an
+unsupported signed division. All initialization has not completed.
 
 ## What the commands actually test
 
@@ -72,9 +76,15 @@ entry prefix through its first imported call, with an explicit 32-bit FS/TEB
 model. `test.ps1` additionally compiles and runs focused Win32-contract tests;
 those are API tests, separate from the binary-translation proof.
 
+For selected native Windows NLS contract comparisons, run
+`.\.venv\Scripts\python.exe -m tools.win32_nls_reference` before `test.ps1`.
+This calls trusted system APIs on authored in-memory strings and writes ignored
+reference data. It does not execute original game code on Windows. The native
+host's NLS behavior is recorded separately from the declared XP process profile.
+
 The runtime currently uses a 64 MiB guest address window and an 80 MiB Wasm heap
 per module. It has explicit page permissions, checked accesses, fault rollback,
-bounded dispatch, and diagnostic instruction traces. This is a limited AOT
+bounded dispatch, tested x87 control words, and diagnostic instruction traces. This is a limited AOT
 translation backend; it is not a complete x86 compiler or Windows emulator.
 The startup module provides a declared XP SP3 single-thread process profile,
 bounded heaps, TLS, locks, process strings, and selected startup APIs. See the

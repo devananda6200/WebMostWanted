@@ -1,12 +1,12 @@
 # Verified status
 
-Checkpoint: 2026-10-11T01:11:29+05:30. Highest completed milestone: **M1**.
+Checkpoint: 2026-10-11T01:47:07+05:30. Highest completed milestone: **M1**.
 
 | Milestone | State | Evidence / limitation |
 | --- | --- | --- |
 | M0 audit/environment | Tested | 1,363 files / 3,025,210,311 bytes; five PE identities; portable Windows SDK |
-| M1 binary translation | Tested, limited subset | 635 synthetic + 38 real routine + 1 original entry prefix + 7 expected faults: **681/681** in Node/browser |
-| M2 translated initialization | Implemented / Built / Tested partially / Failing | 10,126 dispatches from original entry, then LCMapStringW faults; still CRT initialization |
+| M1 binary translation | Tested, limited subset | 662 synthetic + 38 real routine + 1 original entry prefix + 11 expected faults: **712/712** in Node/browser |
+| M2 translated initialization | Implemented / Built / Tested partially / Failing | 1,166,682 dispatches from original entry into game constructors, then unsupported IDIV |
 | M3 menu or initialized race | Proposed / Unverified | No authentic game frame or menu |
 | M4 original driving | Proposed / Unverified | Worker input only; no vehicle simulation |
 | M5 complete race/results | Proposed / Unverified | **Zero complete races demonstrated** |
@@ -17,18 +17,23 @@ Checkpoint: 2026-10-11T01:11:29+05:30. Highest completed milestone: **M1**.
 - `scripts/build.ps1`: assembly -> COFF -> PE32 binary -> generated C++ -> Wasm,
   actual game routine, and original entry-prefix reference. Fixture source is
   never compiled directly to Wasm for the binary-translation proof.
-- `scripts/test.ps1`: 34 Python tests, 681 Node binary cases, exact 34-instruction
-  entry-prefix trace/register/flags/memory comparison, and 18 Win32 Wasm groups.
-- `tools.win32_nls_reference`: 512 CP1252 decode/classification values match
-  trusted native system APIs. Windows build 26300 is not a historical XP oracle.
-- Browser: 681/681, approximately 4.1 seconds including worker scheduling.
+- `scripts/test.ps1`: 37 Python tests, 712 Node binary cases, exact 34-instruction
+  entry-prefix trace/register/flags/memory comparison, and 28 Win32 Wasm groups.
+- `tools.win32_nls_reference`: 2,048 CP1252 decode/classification/casing values
+  and eight best-fit conversion cases match trusted native system APIs.
+  Windows build 26300 is not a historical XP oracle.
+- Browser: 712/712, approximately 4.30 seconds including worker scheduling.
   Wasm and PE-image hashes checked before execution.
-  Two fresh loads of the current artifact passed 681/681; both startup probes
-  reached the same 10,126-dispatch barrier. This is not race-launch reliability.
-- Browser startup: 10,126 dispatches, approximately 56.7 ms, then fault 5 at
-  `0x03100740`, `KERNEL32.dll!LCMapStringW`. Node reaches the same barrier.
+  Earlier repeated 681-case runs reached the same previous CRT barrier; the
+  current 712-case artifact has one exported constructor checkpoint.
+  These diagnostic checks are not race-launch reliability.
+- Browser startup: 1,166,682 dispatches, approximately 701.6 ms, then fault 2 at
+  `0x00464f34`, `idiv dword ptr [esp + 0x28]`. Node reaches the same barrier
+  in approximately 200.4 ms. These diagnostic timings are not gameplay FPS.
   Dispatches include gateways/repeated string iterations; the build contains
-  6,000 distinct original instructions. Neither count proves completed startup.
+  8,000 distinct original instructions. Neither count proves completed startup.
+  Five error-returning CRT initializers and the early void/game constructors
+  execute normally, including original registry/hash code and a heap fill.
 - Secure context, worker/Wasm, isolation, SharedArrayBuffer availability, AMD
   RDNA3 nonfallback WebGPU device/clear, and Emdawn C instance creation passed.
   There is no D3D9 implementation or game rendering yet.
@@ -54,6 +59,10 @@ guest file continuations, D3D9, audio, threads, full x87 and race flow are unver
 - `artifacts/browser-crt-9829.json`, `browser-crt-9829.jpg`
 - `artifacts/browser-crt-10126.json`, `process-check.json`
 - `artifacts/browser-crt-10126-repeat.json`
+- `artifacts/browser-crt-17689.json` (intermediate best-fit conversion barrier)
+- `artifacts/browser-constructors.json`, `browser-constructors.jpg`
+- `artifacts/initializer-analysis.json`, `cpuid-profile-analysis.json`
+- `artifacts/bounded-constructor-seeds.json`
 - `artifacts/startup-node.json`, `startup-history.jsonl`, `startup-build.json`
 - `generated/*.json` coverage; `generated/startup-seeds.json` retained local seeds
 
@@ -71,3 +80,12 @@ were cancelled. A monolithic O0 build completed in about 102 seconds; page-sized
 dispatch reduced a later build to 2.09 seconds. This is build throughput, not game
 performance. Source hashes and checks reject edits during compilation. Required
 unsupported behavior still stops; constructors are not skipped to force startup.
+
+CPUID uses a measured, declared Unicorn Pentium III profile. Its original
+non-SSE2 branch executes without patching game checks. Reference setup now
+explicitly enables OS SSE and native x87 exception delivery; three oracle tests
+cover masked/unmasked/cleared WAIT. Limited x87 control/status operations pass;
+rounded stores, denormals and exception delivery still fail explicitly.
+Increasing the bounded translation set from 6,000 to 8,000 restored entry
+coverage after adding constructor targets. Raising the dispatch budget from
+one to two million let the observed finite REP STOSD fill finish normally.

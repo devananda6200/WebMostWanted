@@ -21,6 +21,8 @@ export function initialize(m,c,image=null) {
   c.xmm?.forEach((lanes,i)=>lanes.forEach((v,j)=>m._set_xmm(i,j,v)));
   m._set_flags(c.eflags);m._set_eip(c.entry);
   if(c.fsBase!==undefined)m._set_fs_base(c.fsBase);
+  if(c.fpuControl!==undefined)m._set_fpu_control(c.fpuControl);
+  if(c.fpuStatus!==undefined)m._set_fpu_status(c.fpuStatus);
   return memory;
 }
 
@@ -29,6 +31,8 @@ export function compare(m,c,memory) {
   for(let i=0;i<8;i++) assert.equal(m._get_reg(i)>>>0,expected.registers[i],`${c.id}: register ${i}`);
   assert.equal((m._get_flags()&expected.flagsMask)>>>0,(expected.eflags&expected.flagsMask)>>>0,`${c.id}: defined flags`);
   expected.xmm?.forEach((lanes,i)=>lanes.forEach((v,j)=>assert.equal(m._get_xmm(i,j)>>>0,v,`${c.id}: XMM${i}[${j}]`)));
+  if(expected.fpuControl!==undefined)assert.equal(m._get_fpu_control(),expected.fpuControl,`${c.id}: x87 control`);
+  if(expected.fpuStatus!==undefined)assert.equal(m._get_fpu_status(),expected.fpuStatus,`${c.id}: x87 status`);
   for(const w of expected.memory) assert.deepEqual([...memory.subarray(w.address,w.address+w.bytes.length)],w.bytes,`${c.id}: memory at 0x${w.address.toString(16)}`);
   assert.equal(m._get_eip()>>>0,c.stop,`${c.id}: return address`);
 }
@@ -59,6 +63,8 @@ try {
         assert.equal(module._run(c.maxSteps,c.stop),2,c.id);
         assert.equal(module._fault_code(),c.expectedFault,c.id);
         for(const w of c.unchangedOnFault||[])assert.deepEqual([...faultMemory.subarray(w.address,w.address+w.bytes.length)],w.bytes,'faulting store must roll back earlier lanes');
+        for(const [key,value] of Object.entries(c.expectedFpuOnFault||{}))assert.equal(module[`_get_fpu_${key}`](),value,`${c.id}: x87 ${key} on fault`);
+        c.expectedRegistersOnFault?.forEach((value,i)=>assert.equal(module._get_reg(i)>>>0,value,`${c.id}: register ${i} on fault`));
         if(c.id==='unmapped') {
           for(let i=0;i<8;i++)assert.equal(module._get_reg(i)>>>0,c.registers[i],`fault must preserve register ${i}`);
           assert.equal(module._get_eip()>>>0,c.entry,'fault must preserve instruction address');

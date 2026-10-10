@@ -7,6 +7,9 @@
 .globl _xchg_alias, _partial_simd_store
 .globl _stdcall_call, _stdcall_callee
 .globl _sse_movsd_unsupported, _popfd_reserved, _popfd_control_unsupported
+.globl _x87_control, _x87_clear, _x87_init, _x87_wait, _x87_rounded_store
+.globl _cpuid_detect
+.globl _cpu_features
 
 _arithmetic:
     push ebp
@@ -162,4 +165,61 @@ _popfd_reserved:
 _popfd_control_unsupported:
     push 0x302
     popfd
+    ret
+_x87_control:
+    mov esi, dword ptr [esp+4]
+    mov edi, dword ptr [esp+8]
+    fnstcw word ptr [edi]
+    fldcw word ptr [esi]
+    fnstcw word ptr [edi+2]
+    fnclex
+    wait
+    fnstsw word ptr [edi+4]
+    fnstsw ax
+    ret
+_x87_clear:
+    mov edi, dword ptr [esp+4]
+    fnstsw word ptr [edi]
+    fnclex
+    wait
+    fnstcw word ptr [edi+2]
+    fnstsw word ptr [edi+4]
+    fnstsw ax
+    ret
+_x87_init:
+    mov edi, dword ptr [esp+4]
+    fninit
+    fnstcw word ptr [edi]
+    fnstsw word ptr [edi+2]
+    fld1
+    fnstsw word ptr [edi+4]
+    fstp qword ptr [edi+8]
+    fnstsw word ptr [edi+6]
+    ret
+_x87_wait:
+    wait
+    ret
+_x87_rounded_store:
+    mov esi, dword ptr [esp+4]
+    mov edi, dword ptr [esp+8]
+    fld qword ptr [esi]
+    fstp dword ptr [edi]
+    ret
+_cpuid_detect:
+    pushfd
+    pop ecx
+    mov eax, ecx
+    xor eax, 0x00200000
+    push eax
+    popfd
+    pushfd
+    pop eax
+    xor eax, ecx
+    push ecx
+    popfd
+    ret
+_cpu_features:
+    mov eax, dword ptr [esp+4]
+    mov ecx, dword ptr [esp+8]
+    cpuid
     ret
