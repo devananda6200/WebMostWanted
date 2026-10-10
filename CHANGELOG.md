@@ -4,6 +4,15 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-11T03:27:54+05:30 — local source reconstruction export
+
+<!-- local-source-reconstruction -->
+
+- Changed: Added source_code/ extraction/decompilation tools, reproducible commands and local evidence beside the original installation. Preserved the existing browser-port changes. Ghidra databases, C-like functions, assembly, symbols, types, PE resources and strings are local ignored outputs.
+- Why: Start the requested binary-to-source reconstruction with address-linked evidence and explicit fidelity limits.
+- Validation: Official Ghidra archive SHA-256 passed; all five analyses and exports completed without timeout. 27,112 functions exported, zero decompiler failures, 1,951 functions with warnings/diagnostics; all 1,309,073 instruction records match original bytes. Rehashed all 1,363 original files: unchanged. Reconstructed 33-byte hash routine passes 1,264 Node-Wasm/Unicorn cases; Python syntax and diff whitespace checks passed.
+- Limitations: No original debug/source tree, full behavioral proof, complete asset decoding, game build or playable WebAssembly game recovered. Only the hash return value and input preservation have focused semantic checks. Human review pending. Authored tooling/docs committed; derived game material remains local.
+
 ## 2026-10-11T02:43:30+05:30 — exact x87 arithmetic and reproducible startup checkpoints
 
 - Changed: Implemented exact FADD/FSUB/FMUL with precision/exponent guards and

@@ -10,6 +10,34 @@ organization are not fully recoverable from this stripped release executable.
 file exists in the 1,363-file installation. Machine-code semantics remain the
 reference when a decompiler's inferred output is ambiguous or wrong.
 
+## Verified export results
+
+Recorded 2026-10-11T03:27:48+05:30. Ghidra 12.1.4 completed analysis and export for all five
+programs without analysis timeout. Counts cover recognized functions only.
+
+| Binary | Function files | Failed decompilations | Functions with warnings/diagnostics | Instruction records checked |
+| --- | ---: | ---: | ---: | ---: |
+| `speed.exe` | 25,768 | 0 | 1,701 | 1,201,070 |
+| `server.dll` | 1,101 | 0 | 162 | 89,917 |
+| `nfsmwres.exe` | 36 | 0 | 19 | 3,746 |
+| `safemode_inst.exe` | 104 | 0 | 35 | 7,272 |
+| `shell_inst.exe` | 103 | 0 | 34 | 7,068 |
+
+All 27,112 function exports are present. All 1,309,073 instruction records match
+the corresponding original PE bytes. All 1,363 original files retain their
+SHA-256, size and modification time. See `evidence/validation.json`.
+
+There are 1,951 functions with warnings or diagnostics across the five binaries.
+The main image has 11,842 computed control-flow sites and 1,038,153 executable
+bytes not classified as instructions. That latter number includes possible data
+and padding; it is not a measure of missing source. Zero failed decompilations
+does not imply complete discovery or correct C.
+
+The separately reconstructed hash routine passes 1,264 return-value and input-
+preservation cases against original x86 emulation after compilation to Node Wasm.
+This is the only routine with a focused semantic reconstruction check in this
+workspace. No full-game compilation or gameplay test passed or was claimed.
+
 ## Contents
 
 - `recovered/<binary>/all_functions.c`: combined C-like decompiler output.
@@ -67,6 +95,8 @@ The existing parent project's Python environment supplies pefile 2024.8.26,
 Capstone 5.0.7 and Unicorn 2.1.4. The hash test also uses its existing LLVM/Node SDK
 at `browser-port/.tools/emsdk-4.0.23`. It compiles the reconstructed C into a small
 standalone Wasm module and compares it in Node with original x86 bytes in Unicorn.
+The local `reconstructed/hash32.c` must be retained with the workspace to rerun
+that test; it is deliberately excluded from the repository along with derived code.
 It does not execute the original Windows game or auxiliary EXEs on the host.
 
 The inventory excludes `source_code/` and records all original paths, sizes,
@@ -82,6 +112,9 @@ global data, constructor order, virtual calls, callbacks and undiscovered code.
 Decompiled success is not evidence that a function compiles or is correct.
 Warnings, undefined operations and failed functions remain visible in the output.
 Preserve address-based names until an interpretation has supporting evidence.
+For example, Ghidra renders the hash accumulator as signed `int`; directly compiling
+its overflowing arithmetic as C can introduce undefined behavior. The separately
+tested reconstruction uses `uint32_t` to preserve the observed modulo-2^32 result.
 
 The raw resource exports are binary data, not recovered shader/audio source.
 Car, world, UI, sound and video formats remain separate reconstruction work.
@@ -104,6 +137,10 @@ build, rendering, driving, race or browser gameplay is verified here.
 - Existing Python/LLVM/Unicorn tools: see the parent project's
   [dependency record](../../../browser-port/docs/DEPENDENCIES.md).
 
-The input binaries and assets come only from the user's supplied local copy.
+The game binary inputs and assets come only from the user's supplied local copy.
+Ghidra also consults installed Windows DLL export tables and its bundled
+`windows_vs12_32` type archive for API names/signatures. Those are analysis aids,
+not proof of the original game's historical Windows ABI. System DLL implementations
+are not exported as game source. The headless logs record these lookups.
 No third-party reconstructed game project or leaked source was imported.
 See [CHANGELOG.md](CHANGELOG.md) and [AI_USAGE.md](AI_USAGE.md) for this workstream.

@@ -48,3 +48,11 @@ sources and licenses are recorded in [DEPENDENCIES.md](browser-port/docs/DEPENDE
 Original assets and all game-derived outputs stay local and ignored by Git.
 
 See [AI_USAGE.md](AI_USAGE.md) for AI assistance and [CHANGELOG.md](CHANGELOG.md) for the development record.
+
+## Local source reconstruction
+
+<!-- local-source-reconstruction -->
+
+A separate [source reconstruction workspace](NFS-Most-Wanted-2005/Need%20For%20Speed%20Most%20Wanted%20Black%20Edition/source_code/README.md) exports 27,112 recognized functions from five supplied binaries with Ghidra 12.1.4. All 1,309,073 exported instruction records match their input PE bytes; all 1,363 original files retain their recorded hashes, sizes and modification times. One reconstructed hash routine passes 1,264 original-x86 versus Node-Wasm cases.
+
+This is unverified decompiler output, with 1,951 functions carrying warnings or diagnostics, not original source or a complete playable port. Decompiled outputs and evidence stay local and ignored. The workspace README contains setup, commands, provenance and limitations.

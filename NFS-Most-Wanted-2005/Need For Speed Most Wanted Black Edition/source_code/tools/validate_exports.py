@@ -1,9 +1,8 @@
 """Check export integrity against the original PE bytes, not decompiler semantics."""
 import csv
 from datetime import datetime, timezone
-import hashlib
 import json
-from pathlib import Path
+import re
 
 import pefile
 
@@ -25,14 +24,21 @@ def validate_binary(name):
         raise ValueError(f"Function count mismatch: {name}")
     addresses = set()
     succeeded = 0
+    functions_folder = (folder / "functions").resolve()
+    if not functions_folder.is_relative_to(folder.resolve()):
+        raise ValueError("Function directory escapes its binary directory")
     for function in functions:
         address = function["address"]
         if address in addresses:
             raise ValueError(f"Duplicate function address: {name}:{address}")
         addresses.add(address)
-        code = (folder / function["file"]).resolve()
-        if not code.is_relative_to(folder.resolve()):
-            raise ValueError("Export path escapes its binary directory")
+        # Exact address filenames avoid repeated resolution of deep Windows paths
+        # for tens of thousands of files, while rejecting traversal in the index.
+        if not re.fullmatch(r"[0-9a-fA-F]{8}", address) or function["file"] != f"functions/{address}.c":
+            raise ValueError("Unexpected function export filename")
+        code = functions_folder / f"{address}.c"
+        if code.is_symlink() or code.stat().st_file_attributes & 0x400:
+            raise ValueError("Refusing a function-file reparse point")
         content = code.read_text(encoding="utf-8")
         if "AUTO-DECOMPILED RECONSTRUCTION" not in content or f"Address: {address} |" not in content:
             raise ValueError(f"Missing provenance header: {code}")
@@ -41,6 +47,7 @@ def validate_binary(name):
         raise ValueError(f"Decompilation status mismatch: {name}")
     if len(list((folder / "functions").glob("*.c"))) != len(functions):
         raise ValueError(f"Missing or stale function files: {name}")
+    print(f"{name}: checked {len(functions)} function files", flush=True)
     with pefile.PE(str(GAME / name)) as pe:
         image = pe.get_memory_mapped_image()
         base = pe.OPTIONAL_HEADER.ImageBase
@@ -67,10 +74,12 @@ def validate_binary(name):
 
 
 def main():
+    print("Checking the original installation SHA-256 inventory...", flush=True)
     baseline = load(ROOT / "evidence" / "input_inventory.json")["files"]
     current = inventory()
     if baseline != current:
         raise ValueError("Original input files changed since baseline")
+    print(f"All {len(current)} original files unchanged", flush=True)
     binaries = [validate_binary(name) for name in BINARIES]
     result = {"created_utc": datetime.now(timezone.utc).isoformat(),
               "status": "export_integrity_passed", "all_original_files_unchanged": True,

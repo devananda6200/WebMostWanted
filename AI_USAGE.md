@@ -14,6 +14,16 @@ Human review remains pending unless explicitly recorded otherwise.
 | 2026-10-11T01:11:29+05:30 | Codex | Advance CRT startup and correct translation | Win32 contracts/native NLS probes; entry-prefix oracle; trace-guided AOT; page dispatch; CPU regressions. Delegated bounded review/platform work with separate ownership. | Human review pending. Corrected MOVSD ambiguity, 16-bit branches, section reads, POPFD flags and reference segments. | 681 Node/browser cases, 34 Python tests, 18 API groups, 512 native values pass. Startup reaches LCMapStringW after 10,126 dispatches. No race claimed. |
 | 2026-10-11T00:38:35+05:30 | Codex | Local browser-port implementation | Audited installation; built portable toolchain, binary lifter, checked guest memory, reference/Wasm tests, worker host and read-only server; delegated bounded audit/toolchain/browser tasks with separate file ownership. | Human review pending. Agent review corrected prefix handling, HEAPU8 exports, fault state rollback, path validation and diagnostic rendering. | 674 Node/browser cases passed; WebGPU/worker/isolation verified. Original entry reaches a required platform barrier; no playable game claimed. |
 
+<!-- local-source-reconstruction -->
+
+### 2026-10-11T03:27:54+05:30 — local source reconstruction
+
+Codex authored and ran the source_code inventory, PE extraction, Ghidra export and validation tools; preserved uncommitted browser-port work; reconstructed one small hash routine. No agents were delegated and no game data was uploaded.
+
+Checks: 27,112 function exports, 1,309,073 original-byte instruction comparisons, unchanged hashes for 1,363 original files, and 1,264 original-x86 versus Node-Wasm hash cases. Ghidra analysis/export completed for five PEs without timeouts. Human review pending.
+
+Corrections: resumed the slow Ghidra download with checked ranges, verified its published checksum, added emulator completion and stale-summary checks, and used unsigned arithmetic to preserve hash overflow. Automatic decompiler output remains unverified and is not claimed as exact source or a working game.
+
 ## Template preparation
 
 On 10 October 2026, Codex prepared this documentation template from the organizer's supplied rules and checked the linked Luma page for the event name and dates. This covered `README.md`, `RULES.md`, `AGENTS.md`, `CHANGELOG.md`, `AI_USAGE.md`, `SUBMISSION.md`, `.gitignore`, and the pull request checklist. Agent validation covered local links, event consistency, required documents, and diff whitespace; organizer review is pending.
