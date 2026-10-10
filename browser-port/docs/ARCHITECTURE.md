@@ -89,6 +89,26 @@ semantics, guest exceptions, multithreading, DLL loading, callbacks, and shaders
 are not validated. Unsupported required instructions/imports stop execution.
 Passing a short routine proves only those tested operations and input classes.
 
+Memory FADD/FSUB now admits finite results that are exactly representable in
+the current binary64 storage and selected precision. Knuth TwoSum checks for a
+nonzero rounding residue; PC=24 additionally requires a 24-bit significand.
+PC=53/64 is supported only for that exact storage subset, not full extended
+precision. Exact cancellation uses the guest rounding mode for signed zero;
+successful operations clear C1. Reserved precision, rounded results, extended
+exponent needs, stack faults and pending exceptions stop with state rollback.
+Fault diagnostics include raw binary64 words for the current x87 stack.
+Memory FMUL strips powers of two from the normal inputs' significands and checks
+the odd product's bit length against the precision limit before accepting host
+multiplication. Its exact exponent is checked before host rounding. This rejects
+a product just below DBL_MIN that host rounding would turn into a normal double;
+checking the rounded result alone was insufficient. Signed zero, all rounding
+modes, precision boundaries, exponent limits and transactional faults are tested.
+[Error-free TwoSum analysis](https://www.tuhh.de/ti3/paper/rump/OgRuOi05.pdf),
+[Intel FADD/FSUB semantics](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf).
+The [extended arithmetic assessment](FLOATING_POINT.md) records a pinned
+SoftFloat candidate and the remaining x87 status/exception work. Its separate
+library harness is being built; it is not part of the guest runtime.
+
 32-bit DIV/IDIV use the full EDX:EAX dividend, capture the divisor before any
 register write, and check zero/overflow before committing quotient and remainder.
 Guest #DE delivery remains an explicit barrier. The signed INT64_MIN / -1 pair
@@ -135,6 +155,12 @@ CR4 bits 9/10 set). Selecting a model without that initialization caused the exi
 SIMD fixture to fail; the explicit state fixes that reference setup failure.
 Review also found that a clear CR0.NE suppressed Unicorn's native WAIT exception;
 three focused oracle tests now verify masked, unmasked and cleared exceptions.
+Authored native PE32 probes establish `(cw & 0x1f3f) | 0x40` readback for this
+AMD host. FLDCW and diagnostic setters use this declared control-word profile;
+the reference records its raw discrepancy before normalization. Intel reserves
+these bits, so this measurement is not a universal or physical Pentium III
+claim. The 18 FLDCW cases plus FNINIT and process-return plumbing are repeatable
+with `tools.native_fpu_reference`; no game executable is run natively.
 Model/API sources: [Unicorn CPU definitions](https://github.com/unicorn-engine/unicorn/blob/2.1.4/qemu/target/i386/cpu.c)
 and [Python controls](https://github.com/unicorn-engine/unicorn/blob/2.1.4/bindings/python/unicorn/unicorn_py3/unicorn.py).
 
@@ -152,6 +178,12 @@ Builds reject a source change during compilation. `startup.ps1 -FromTrace`
 adds observed executable addresses from the matching local trace to the ignored
 seed file; it never executes a runtime x86 decoder. Each failed probe records
 its exact build command and the latest 4,096 dispatch addresses.
+Seeds are saved as immutable SHA-256-named snapshots. `--seed-file` validates
+executable identity, file-backed executable addresses, snapshot identity and
+source stability, without mutating the input or default progress. This replaces
+an unusable 121,267-character command; a measured replay was 191 characters and
+reproduced identical Wasm bytes and the exact fault. Twenty-four tests cover
+validation, aliasing, output containment, concurrent edits and compact replay.
 Node and browser exports include stack arguments and a 64-byte fault-memory
 window when the fault address is in bounds. These private artifacts are ignored;
 they must not be committed or uploaded.

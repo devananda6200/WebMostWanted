@@ -209,3 +209,9 @@ IDIV at `0x00464f34`, SHLD at `0x0045216e`, and FABS/FCOMP at `0x00885646` /
 `0x00885648`. Their translation tests and known reference-emulator defects are
 documented in [ARCHITECTURE.md](ARCHITECTURE.md). These observations do not
 identify a race entry or prove full application initialization.
+
+The subsequent verified path executes exact FSUB/FADD around `0x0088585b`
+(original constants 10,000 and 4,000), completes the observed name-sorting path,
+and reaches `0x00886c26`, `fmul qword ptr [0x8987a8]`, after 2,044,470 dispatches.
+The runtime stops there. The extra dispatch budget permits the original sort
+to finish; no names, pointers, constructor order or game state are forced.

@@ -69,6 +69,7 @@ try {
         assert.equal(module._fault_code(),c.expectedFault,c.id);
         for(const w of c.unchangedOnFault||[])assert.deepEqual([...faultMemory.subarray(w.address,w.address+w.bytes.length)],w.bytes,'faulting store must roll back earlier lanes');
         for(const [key,value] of Object.entries(c.expectedFpuOnFault||{}))assert.equal(module[`_get_fpu_${key}`](),value,`${c.id}: x87 ${key} on fault`);
+        c.expectedFpuValuesOnFault?.forEach((words,i)=>words.forEach((value,j)=>assert.equal(module._get_fpu_bits(i,j)>>>0,value,`${c.id}: x87 ST(${i}) word ${j} on fault`)));
         c.expectedRegistersOnFault?.forEach((value,i)=>assert.equal(module._get_reg(i)>>>0,value,`${c.id}: register ${i} on fault`));
         if(c.expectedEipOnFault!==undefined)assert.equal(module._get_eip()>>>0,c.expectedEipOnFault,`${c.id}: fault instruction`);
         if(c.expectedFlagsOnFault!==undefined)assert.equal(module._get_flags()>>>0,c.expectedFlagsOnFault,`${c.id}: flags on fault`);

@@ -32,3 +32,6 @@ targets only after a matching untranslated-target fault. It does not execute or
 skip constructors. Current startup defaults: 24,000 instructions / 2M dispatches.
 Controlled CPU-state injection belongs only to authored synthetic fixtures,
 never the original startup/race case. Preserve named oracle discrepancies.
+`startup.ps1 -SeedFile` replays immutable `artifacts/startup-seeds/` snapshots;
+do not replace that with thousands of command-line seeds. Native authored x87
+probes use `python -m tools.native_fpu_reference` with a non-elevated token.

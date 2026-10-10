@@ -253,6 +253,10 @@ class Emitter:
             return "fwait();"
         if m == "fabs":
             return "fabsolute();"
+        if m in ("fadd", "fsub") and len(o)==1 and o[0].type==X86_OP_MEM and o[0].size in (4,8):
+            return f"fadd_exact(fload({self.address(o[0])},{o[0].size*8}),{'true' if m=='fsub' else 'false'});"
+        if m == "fmul" and len(o)==1 and o[0].type==X86_OP_MEM and o[0].size in (4,8):
+            return f"fmul_exact(fload({self.address(o[0])},{o[0].size*8}));"
         if m in ("fcom", "fcomp") and len(o)==1 and o[0].type==X86_OP_MEM and o[0].size in (4,8):
             return f"fcompare(fload({self.address(o[0])},{o[0].size*8}),{'true' if m=='fcomp' else 'false'});"
         if m == "fninit":

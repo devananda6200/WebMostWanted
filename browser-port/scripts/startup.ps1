@@ -1,11 +1,12 @@
 [CmdletBinding()]
-param([int]$Limit = 24000, [string[]]$Seed = @(), [switch]$FromTrace, [int]$MaxSteps = 2000000)
+param([int]$Limit = 24000, [string[]]$Seed = @(), [switch]$FromTrace, [int]$MaxSteps = 2000000, [string]$SeedFile)
 $ErrorActionPreference = 'Stop'
 $portRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $portRoot
 try {
     $startupArgs = @('-m', 'tools.build_startup', '--limit', "$Limit", '--max-steps', "$MaxSteps")
     foreach ($address in $Seed) { $startupArgs += @('--seed', $address) }
+    if ($SeedFile) { $startupArgs += @('--seed-file', $SeedFile) }
     if ($FromTrace) { $startupArgs += '--from-trace' }
     & '.\.venv\Scripts\python.exe' @startupArgs
     if ($LASTEXITCODE -ne 0) { throw 'Startup translation build failed.' }

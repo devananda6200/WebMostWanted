@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import math
 import json
 from pathlib import Path
 import random
@@ -29,6 +30,11 @@ ROUTINE_SIZE=33
 ROUTINE_SHA='c5798f0490c6fc265ff0ebd063a7c536e8281fb2789eb4434900ebb3d3896808'
 
 
+def canonical_fpu_control(value):
+    """Reserved-bit readback measured with authored native PE32 FLDCW/FNSTCW."""
+    return (value&0x1f3f)|0x0040
+
+
 def write_json(path, value):
     Path(path).parent.mkdir(parents=True,exist_ok=True)
     Path(path).write_text(json.dumps(value,indent=2)+'\n',encoding='utf-8')
@@ -53,7 +59,9 @@ def compile_fixture():
            'idiv16_unsupported','div8_unsupported',
            'shld32_cl','shld32_imm','shld32_mem','shld32_alias',
            'shrd32_cl','shrd32_imm','shrd32_mem','shrd32_alias','shld16_unsupported',
-           'x87_abs','x87_abs_compare','x87_compare64','x87_compare_empty','x87_abs_empty']
+           'x87_abs','x87_abs_compare','x87_compare64','x87_compare_empty','x87_abs_empty',
+           'x87_add32','x87_add64','x87_sub32','x87_sub64','x87_add_empty','x87_sub_empty',
+           'x87_mul32','x87_mul64','x87_mul_empty']
     command=[*linker_command(),'/machine:x86','/subsystem:console','/entry:arithmetic',
              '/nodefaultlib','/fixed','/base:0x1000000','/timestamp:0','/safeseh:no',
              f'/out:{exe}',*(f'/export:{name}' for name in names),str(obj)]
@@ -118,7 +126,7 @@ def reference_cpu(c):
     for reg,value in zip(REG_IDS,c['registers']): u.reg_write(reg,value)
     for reg,lanes in zip(XMM_IDS,c['xmm']): u.reg_write(reg,sum(v<<(32*i) for i,v in enumerate(lanes)))
     u.reg_write(x86.UC_X86_REG_EFLAGS,c['eflags'])
-    u.reg_write(x86.UC_X86_REG_FPCW,c.get('fpuControl',0x037f))
+    u.reg_write(x86.UC_X86_REG_FPCW,canonical_fpu_control(c.get('fpuControl',0x037f)))
     u.reg_write(x86.UC_X86_REG_FPSW,c.get('fpuStatus',0))
     return u
 
@@ -126,9 +134,19 @@ def reference_cpu(c):
 def reference(c):
     u=reference_cpu(c)
     count=0
+    corrections=[]
+    def normalize_control(address):
+        raw=u.reg_read(x86.UC_X86_REG_FPCW)
+        canonical=canonical_fpu_control(raw)
+        if raw!=canonical:
+            corrections.append({'before_eip':address,'raw_control':raw,'canonical_control':canonical})
+            u.reg_write(x86.UC_X86_REG_FPCW,canonical)
     def tick(_u,address,size,user):
         nonlocal count
         count+=1
+        # Normalize after any previous FLDCW, before another instruction observes
+        # the value. Keep the raw reference discrepancy rather than hiding it.
+        normalize_control(address)
     u.hook_add(UC_HOOK_CODE,tick)
     if 'testCheckpoint' in c:
         checkpoint=c['testCheckpoint']
@@ -140,6 +158,13 @@ def reference(c):
     u.emu_start(start,c['stop'],timeout=2_000_000,count=c['maxSteps'])
     if u.reg_read(x86.UC_X86_REG_EIP)!=c['stop']:
         raise RuntimeError(f"Reference did not return: {c['id']}")
+    normalize_control(c['stop'])
+    raw_initial=c.get('fpuControl',0x37f)
+    if corrections or canonical_fpu_control(raw_initial)!=raw_initial:
+        c['control_oracle_adjustment']={'reason':'Native PE32 reserved control-bit readback differs from Unicorn 2.1.4',
+            'evidence':'artifacts/native-fpu-control/results.json',
+            'initial_raw_control':raw_initial,'initial_canonical_control':canonical_fpu_control(raw_initial),
+            'runtime_corrections':corrections}
     c['expected']={'registers':[u.reg_read(r) for r in REG_IDS],
                    'eflags':u.reg_read(x86.UC_X86_REG_EFLAGS),'flagsMask':c.pop('flagsMask'),
                    'xmm':[[int(u.reg_read(r)>>(32*i))&0xffffffff for i in range(4)] for r in XMM_IDS],
@@ -158,6 +183,134 @@ def division_case(image,name,dividend,divisor):
     # Only the six arithmetic bits are undefined. Compare control bits too.
     c['flagsMask']=0xffffffff^FLAGS
     return c
+
+
+def exact_x87_case(image,name,a,b,control):
+    width='f' if name.split('/')[0].endswith('32') else 'd'
+    c=case(image,name,[DATA,DATA+128],writes=[
+        {'address':DATA,'bytes':list(struct.pack('<d'+width,a,b))},
+        {'address':DATA+128,'bytes':[0xa5]*8}])
+    c['fpuControl']=control
+    return c
+
+
+def exact_x87_cases(image):
+    cases=[]
+    pairs=[(10000.0,4000.0),(1.5,2.25),(-1.5,2.25),(1.5,-2.25),
+           (0.0,0.0),(-0.0,0.0),(0.0,-0.0),(-0.0,-0.0),
+           (2.0**100,2.0**100),(2.0**-100,2.0**-100)]
+    for precision in (0,0x200,0x300):
+        for rounding in range(4):
+            control=precision|(rounding<<10)|0x3f
+            for name in ('x87_add32','x87_add64','x87_sub32','x87_sub64','x87_mul32','x87_mul64'):
+                for i,(a,b) in enumerate(pairs):
+                    cases.append(reference(exact_x87_case(image,f'{name}/{control:x}-{i}',a,b,control)))
+            for name in ('x87_mul32','x87_mul64'):
+                cases.append(reference(exact_x87_case(image,f'{name}/constructor-{control:x}',8738133/524288,0.5,control)))
+            for i,(a,b) in enumerate(((2.0**900,2.0**-100),(2.0**-900,2.0**100))):
+                cases.append(reference(exact_x87_case(image,f'x87_mul64/wide-{control:x}-{i}',a,b,control)))
+            for i,(a,b) in enumerate(((2.0**-1022,1.0),(-2.0**-1022,1.0),(4097.0,2049.0))):
+                cases.append(reference(exact_x87_case(image,f'x87_mul64/boundary-{control:x}-{i}',a,b,control)))
+    # Binary64 precision and wide exponents are distinct from x87 PC=24.
+    for control in (0x23f,0x63f,0xa3f,0xe3f,0x33f,0x73f,0xb3f,0xf3f):
+        cases.append(reference(exact_x87_case(image,f'x87_mul64/product-bit-boundary-{control:x}',2.0**26+1,2.0**26+1,control)))
+        for name in ('x87_add64','x87_sub64'):
+            for i,(a,b) in enumerate(((2.0**52,1.0),(2.0**900,2.0**900),(2.0**-900,2.0**-900))):
+                cases.append(reference(exact_x87_case(image,f'{name}/wide-{control:x}-{i}',a,b,control)))
+    for control in (0x03f,0x43f,0x83f,0xc3f):
+        for i,a in enumerate((2.0**900,2.0**-900)):
+            cases.append(reference(exact_x87_case(image,f'x87_add64/pc24-wide-{control:x}-{i}',a,a,control)))
+        # Precision applies to the result, not a premature rounding of inputs.
+        cases.append(reference(exact_x87_case(image,f'x87_sub64/pc24-cancel-{control:x}',1.0+2.0**-52,1.0,control)))
+    for name,mnemonic in (('x87_add64','fadd'),('x87_sub64','fsub'),('x87_mul64','fmul')):
+        c=exact_x87_case(image,name+'/c1-after-load',10000.0,4000.0,0x023f)
+        decoder=cs.Cs(cs.CS_ARCH_X86,cs.CS_MODE_32)
+        point=next(i.address for i in decoder.disasm(image.read(c['entry'],64),c['entry']) if i.mnemonic==mnemonic)
+        c['testCheckpoint']={'eip':point,'fpuStatus':0x3a00,'fpuDepth':1}
+        result=reference(c);expected=result['expected']
+        if expected['registers'][0]&0x200 or expected['fpuStatus']&0x200:
+            result['oracle_adjustment']={'reason':'Intel C1=0 for this exact arithmetic result',
+                'source':'https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf',
+                'raw_fpu_status':expected['fpuStatus'],'raw_eax':expected['registers'][0],'corrected_mask':0x200}
+            expected['fpuStatus']&=~0x200;expected['registers'][0]&=~0x200
+        cases.append(result)
+    return cases
+
+
+def exact_x87_faults(image):
+    faults=[]
+    inputs=[('rounded-53',1.0,2.0**-54,0x23f,'rounded or extended-significand'),
+            ('extended-64',1.0,2.0**-54,0x33f,'rounded or extended-significand'),
+            ('rounded-24',2.0**24,1.0,0x03f,'rounded or extended-significand'),
+            ('reserved-pc',10000.0,4000.0,0x13f,'reserved x87 precision')]
+    for name in ('x87_add64','x87_sub64','x87_mul64'):
+        for label,a,b,control,text in inputs:
+            # 2^24 - 1 fits PC=24, so use a negative source for the FSUB case.
+            if label=='rounded-24' and name=='x87_sub64':b=-b
+            if name=='x87_mul64' and label!='reserved-pc':
+                a=b=1.0+2.0**(-23 if label=='rounded-24' else -52)
+            c=exact_x87_case(image,name+'/'+label,a,b,control)
+            decoder=cs.Cs(cs.CS_ARCH_X86,cs.CS_MODE_32)
+            point=next(i.address for i in decoder.disasm(image.read(c['entry'],64),c['entry']) if i.mnemonic in ('fadd','fsub','fmul'))
+            c.update(expectedFault=2,expectedFaultText=text,expectedEipOnFault=point,
+                     expectedFpuOnFault={'control':control,'status':0x3800,'depth':1},
+                     expectedFpuValuesOnFault=[list(struct.unpack('<II',struct.pack('<d',a)))],
+                     unchangedOnFault=[{'address':DATA+128,'bytes':[0xa5]*8}])
+            faults.append(c)
+    for i,(name,a,b) in enumerate((('x87_add64',float.fromhex('0x1.fffffffffffffp+1023'),float.fromhex('0x1.fffffffffffffp+1023')),
+                     ('x87_sub64',2.0**-1022,math.nextafter(2.0**-1022,math.inf)),
+                     ('x87_mul64',2.0**1023,2.0),('x87_mul64',2.0**-1022,0.5),
+                     ('x87_mul64',2.0**-1022,2.0**-100))):
+        c=exact_x87_case(image,f'{name}/exponent-range-{i}',a,b,0x33f)
+        c.update(expectedFault=2,expectedFaultText='extended exponent range',
+                 expectedFpuOnFault={'control':0x33f,'status':0x3800,'depth':1},
+                 expectedFpuValuesOnFault=[list(struct.unpack('<II',struct.pack('<d',a)))],
+                 unchangedOnFault=[{'address':DATA+128,'bytes':[0xa5]*8}])
+        faults.append(c)
+    # The exact extended product is just below DBL_MIN, but host RN multiplication
+    # rounds it up to DBL_MIN. A post-rounding fpclassify check alone misses it.
+    for precision in (0x200,0x300):
+        for rounding in range(4):
+            for negative in (False,True):
+                control=precision|(rounding<<10)|0x3f
+                a=float.fromhex('0x1.fffffffffffffp-1')*(-1 if negative else 1)
+                c=exact_x87_case(image,f'x87_mul64/hidden-underflow-{control:x}-{negative}',a,2.0**-1022,control)
+                c.update(expectedFault=2,expectedFaultText='extended exponent range',
+                         expectedFpuOnFault={'control':control,'status':0x3800,'depth':1},
+                         expectedFpuValuesOnFault=[list(struct.unpack('<II',struct.pack('<d',a)))],
+                         unchangedOnFault=[{'address':DATA+128,'bytes':[0xa5]*8}])
+                faults.append(c)
+    c=exact_x87_case(image,'x87_mul64/product-bit-boundary',8191.0,4095.0,0x03f)
+    c.update(expectedFault=2,expectedFaultText='rounded or extended-significand',
+             expectedFpuOnFault={'control':0x03f,'status':0x3800,'depth':1},
+             expectedFpuValuesOnFault=[list(struct.unpack('<II',struct.pack('<d',8191.0)))])
+    faults.append(c)
+    for control in (0x23f,0x63f,0xa3f,0xe3f,0x33f,0x73f,0xb3f,0xf3f):
+        a=2.0**27-1
+        c=exact_x87_case(image,f'x87_mul64/product-54-bits-{control:x}',a,a,control)
+        c.update(expectedFault=2,expectedFaultText='rounded or extended-significand',
+                 expectedFpuOnFault={'control':control,'status':0x3800,'depth':1},
+                 expectedFpuValuesOnFault=[list(struct.unpack('<II',struct.pack('<d',a)))])
+        faults.append(c)
+    for name in ('x87_add_empty','x87_sub_empty','x87_mul_empty'):
+        for pending in (False,True):
+            c=case(image,name+('/pending' if pending else '/empty'));c['registers'][6]=DATA
+            c['fpuControl']=0x37e if pending else 0x37f;c['fpuStatus']=0x81 if pending else 0
+            c.update(expectedFault=2,expectedEipOnFault=c['entry'],expectedRegistersOnFault=c['registers'].copy(),
+                     expectedFaultText='pending unmasked x87 exception' if pending else 'stack underflow',
+                     expectedFpuOnFault={'control':c['fpuControl'],'status':c['fpuStatus'],'depth':0})
+            faults.append(c)
+    for name in ('x87_add64','x87_sub64','x87_mul64'):
+        c=case(image,name+'/unmapped-source',[DATA+4096-8,DATA+128],writes=[
+            {'address':DATA+4096-8,'bytes':list(struct.pack('<d',10000.0))},
+            {'address':DATA+128,'bytes':[0xa5]*8}])
+        for region in c['regions']:
+            if region['address']==DATA:region['size']=4096
+        c.update(expectedFault=1,expectedFpuOnFault={'control':0x37f,'status':0x3800,'depth':1},
+                 expectedFpuValuesOnFault=[list(struct.unpack('<II',struct.pack('<d',10000.0)))],
+                 unchangedOnFault=[{'address':DATA+128,'bytes':[0xa5]*8}])
+        faults.append(c)
+    return faults
 
 
 def division_cases(image):
@@ -268,7 +421,8 @@ def synthetic_cases(image):
     for i,v in enumerate([0.0,-0.0,1.5,-123.75,2**-100]):
         c=case(image,f'x87_load_store/{i}',[DATA,DATA+128],writes=[{'address':DATA,'bytes':list(struct.pack('<f',v))}])
         cases.append(reference(c))
-    for control in (0x037f,0x023f,0x027f,0x007f,0x003f,0x073f,0x0b3f,0x0f3f,0x037e):
+    for control in (0x037f,0x023f,0x027f,0x007f,0x003f,0x073f,0x0b3f,0x0f3f,0x037e,
+                    0x0000,0x00ff,0x033f,0x537f,0xffff,0x8040,0x0080):
         c=case(image,f'x87_control/{control:x}',[DATA,DATA+128],
                writes=[{'address':DATA,'bytes':list(struct.pack('<H',control))}])
         cases.append(reference(c))
@@ -328,7 +482,7 @@ def synthetic_cases(image):
             'raw_fpu_status':expected['fpuStatus'],'raw_eax':expected['registers'][0],'corrected_mask':0x0200}
         expected['fpuStatus']&=~0x0200;expected['registers'][0]&=~0x0200
         cases.append(result)
-    return cases+division_cases(image)
+    return cases+division_cases(image)+exact_x87_cases(image)
 
 
 def real_cases(image):
@@ -423,6 +577,10 @@ def main():
                 c['expectedFault']=1;c['expectedEipOnFault']=c['entry']
                 c['expectedFlagsOnFault']=c['eflags'];c['expectedRegistersOnFault']=c['registers'].copy()
                 c['unchangedOnFault']=[{'address':DATA,'bytes':[0xa5]*4}];faults.append(c)
+    faults.extend(exact_x87_faults(fixture))
+    for c in faults:
+        if 'control' in c.get('expectedFpuOnFault',{}):
+            c['expectedFpuOnFault']['control']=canonical_fpu_control(c['expectedFpuOnFault']['control'])
     write_json(ROOT/'build/fault-cases.json',{'schema':1,'cases':faults})
     suites=[{'id':'synthetic','module':'synthetic.js','cases':'synthetic-cases.json','faultCases':'fault-cases.json','input_sha256':fixture.sha256}]
     reports={'synthetic':report}

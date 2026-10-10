@@ -120,7 +120,7 @@ async function initializeCase(module, test, image = null) {
 }
 
 function cpuState(module) {
-  return {registers: Array.from({length: 8}, (_, index) => unsigned(module._get_reg(index))), eip: unsigned(module._get_eip()), eflags: unsigned(module._get_flags()), xmm: Array.from({length: 8}, (_, register) => Array.from({length: 4}, (_, lane) => unsigned(module._get_xmm(register, lane)))), fpu: {control: module._get_fpu_control(), status: module._get_fpu_status(), depth: module._get_fpu_depth()}};
+  return {registers: Array.from({length: 8}, (_, index) => unsigned(module._get_reg(index))), eip: unsigned(module._get_eip()), eflags: unsigned(module._get_flags()), xmm: Array.from({length: 8}, (_, register) => Array.from({length: 4}, (_, lane) => unsigned(module._get_xmm(register, lane)))), fpu: {control: module._get_fpu_control(), status: module._get_fpu_status(), depth: module._get_fpu_depth(), valueFormat: "exact-binary64-subset", values: Array.from({length: module._get_fpu_depth()}, (_, i) => [unsigned(module._get_fpu_bits(i,0)), unsigned(module._get_fpu_bits(i,1))])}};
 }
 
 async function execute(module, test) {
@@ -157,6 +157,10 @@ function compareCase(module, test, execution) {
     for (const [field, expected] of Object.entries(test.expectedFpuOnFault || {})) {
       if (execution.cpu.fpu[field] !== expected) mismatches.push({field: `x87.${field}`, expected, actual: execution.cpu.fpu[field]});
     }
+    (test.expectedFpuValuesOnFault || []).forEach((words, i) => words.forEach((expected, j) => {
+      const actual = execution.cpu.fpu.values[i]?.[j];
+      if (actual !== expected) mismatches.push({field: `x87.ST(${i})[${j}]`, expected, actual});
+    }));
     (test.expectedRegistersOnFault || []).forEach((expected, index) => {
       if (execution.cpu.registers[index] !== expected) mismatches.push({field: `registers[${index}]`, expected, actual: execution.cpu.registers[index]});
     });

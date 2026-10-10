@@ -1,12 +1,12 @@
 # Verified status
 
-Checkpoint: 2026-10-11T02:15:04+05:30. Highest completed milestone: **M1**.
+Checkpoint: 2026-10-11T02:43:30+05:30. Highest completed milestone: **M1**.
 
 | Milestone | State | Evidence / limitation |
 | --- | --- | --- |
 | M0 audit/environment | Tested | 1,363 files / 3,025,210,311 bytes; five PE identities; portable Windows SDK |
-| M1 binary translation | Tested, limited subset | 1,317 synthetic + 38 real routine + 1 original entry prefix + 46 expected faults: **1,402/1,402** in Node/browser; named oracle corrections below |
-| M2 translated initialization | Implemented / Built / Tested partially / Failing | 1,765,180 dispatches from original entry into game constructors, then unsupported FSUB |
+| M1 binary translation | Tested, limited subset | 2,199 synthetic + 38 real routine + 1 original entry prefix + 97 expected faults: **2,335/2,335** in Node/browser; named oracle corrections below |
+| M2 translated initialization | Implemented / Built / Tested partially / Failing | 2,053,284 dispatches from original entry into game constructors, then unsupported FILD |
 | M3 menu or initialized race | Proposed / Unverified | No authentic game frame or menu |
 | M4 original driving | Proposed / Unverified | Worker input only; no vehicle simulation |
 | M5 complete race/results | Proposed / Unverified | **Zero complete races demonstrated** |
@@ -17,23 +17,29 @@ Checkpoint: 2026-10-11T02:15:04+05:30. Highest completed milestone: **M1**.
 - `scripts/build.ps1`: assembly -> COFF -> PE32 binary -> generated C++ -> Wasm,
   actual game routine, and original entry-prefix reference. Fixture source is
   never compiled directly to Wasm for the binary-translation proof.
-- `scripts/test.ps1`: 54 Python tests, 1,402 Node binary cases, exact 34-instruction
+- `scripts/test.ps1`: 78 Python tests, 2,335 Node binary cases, exact 34-instruction
   entry-prefix trace/register/flags/memory comparison, and 33 Win32 Wasm groups.
 - `tools.win32_nls_reference`: 2,048 CP1252 decode/classification/casing values
   and eight best-fit conversion cases match trusted native system APIs.
   Windows build 26300 is not a historical XP oracle.
 - `tools.win32_heap_reference`: four trusted native private-heap reallocation
   observations match Wasm. Source is authored; no native game code is executed.
-- Browser: 1,402/1,402, approximately 8.54 seconds including worker scheduling.
+- `tools.native_fpu_reference`: 20 authored native PE32 probes pass, covering
+  18 control words, FNINIT, and process-return plumbing. This measured AMD-host
+  reserved-bit profile differs from raw Unicorn in 15 cases; it is not a physical
+  Pentium III or universal architecture claim. Original game code is not run.
+- Snapshot replay preserves the input and default seed files, reproduces identical
+  Wasm bytes and the 2,042,864-dispatch checkpoint using a 191-character command.
+- Browser: 2,335/2,335, approximately 40.59 seconds including worker scheduling.
   Wasm and PE-image hashes checked before execution.
   Earlier runs reached their previous CRT/constructor barriers; the current
-  1,402-case artifact has one exported FSUB constructor checkpoint.
+  2,335-case artifact includes the current constructor checkpoint.
   These diagnostic checks are not race-launch reliability.
-- Browser startup: 1,765,180 dispatches, approximately 1,271.3 ms, then fault 2 at
-  `0x0088585b`, `fsub dword ptr [0x8ee6b8]`. Node reaches the same barrier
-  in approximately 747.3 ms. These diagnostic timings are not gameplay FPS.
+- Startup: 2,053,284 dispatches, then fault 2 at `0x00887040`,
+  `fild dword ptr [0x8f82fc]`. Node reaches this barrier in approximately
+  1,058.4 ms. These diagnostic timings are not gameplay FPS.
   Dispatches include gateways/repeated string iterations; the build contains
-  32,000 distinct original instructions. Neither count proves completed startup.
+  40,000 distinct original instructions. Neither count proves completed startup.
   Five error-returning CRT initializers and the early void/game constructors
   execute normally, including original registry/hash code and a heap fill.
 - Secure context, worker/Wasm, isolation, SharedArrayBuffer availability, AMD
@@ -66,6 +72,11 @@ guest file continuations, D3D9, audio, threads, full x87 and race flow are unver
 - `artifacts/browser-division.json`, `browser-arithmetic.json`
 - `artifacts/browser-heap-realloc.json`, `heap-realloc-reference.json`
 - `artifacts/wasm-tests-x87-oracle-failure.json`
+- `artifacts/native-fpu-control/results.json`
+- `artifacts/startup-seed-replay.json`, `artifacts/startup-seeds/*.json`
+- `artifacts/fmul-constructor-analysis.json`, `fmul-predicate-review.json`
+- `artifacts/browser-exact-x87.json`, `browser-exact-arithmetic.json`
+- `artifacts/process-check-exact-arithmetic.json`, `validation-exact-arithmetic.txt`
 - `artifacts/initializer-analysis.json`, `cpuid-profile-analysis.json`
 - `artifacts/bounded-constructor-seeds.json`
 - `artifacts/constructor-batch-2.json`, `constructor-batch-3.json`, `constructor-batch-4.json`
@@ -101,13 +112,21 @@ one to two million let the observed finite REP STOSD fill finish normally.
 DIV/IDIV, SHLD/SHRD, finite FABS/FCOM/FCOMP, exact-store C1 clearing, and
 HeapReAlloc now pass focused tests. Seventeen initializer-seeding tests cover
 identity, bounds, concurrent changes, and original-file protection. Later bounded
-constructor batches increased coverage to 32,000 instructions; no constructor was
-skipped. The current FSUB operands in original data are 10,000 and 4,000.
+constructor batches increased coverage to 40,000 instructions; no constructor was
+skipped. Exact FADD/FSUB pass the original 10,000 and 4,000 constructor constants.
+Exact FMUL then passes the original value 8738133/524288 multiplied by 0.5 and
+its following float store. Rounded results remain unsupported. Review caught
+host rounding that could conceal an exact product below DBL_MIN; the corrected
+pre-rounding exponent guard has binary regressions and agrees with 18,147
+independent rational checks. Missing authored fixture exports were corrected
+before the successful build. The 3M dispatch bound lets original sorting finish.
 
 Pinned Unicorn 2.1.4 has observed oracle defects. INT64_MIN/-1 crashes its host
 division helper; that overflow has a specification test instead. Pending #MF on
-FABS/FCOMP likewise has two specification tests. Thirty finite x87 cases correct
+FABS/FCOMP likewise has two specification tests. Named finite x87 cases correct
 Unicorn's stale C1 against Intel's specified clearing behavior; raw EAX/FPSW and
 the named correction remain in case evidence. Three controlled-state checkpoints
 isolate that behavior after FLD. These corrections are not hidden differential
-matches. Full extended-precision arithmetic remains unimplemented.
+matches. Native-reserved-control-bit differences are recorded separately before
+normalizing the reference to the declared guest profile. Full extended-precision
+arithmetic remains unimplemented; an isolated SoftFloat harness is in progress.

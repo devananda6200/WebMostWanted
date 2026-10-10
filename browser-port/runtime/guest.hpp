@@ -202,10 +202,16 @@ inline void finit() {
     fpu_control=0x037f; fpu_status=0; fpu_depth=0;
     std::memset(fpu,0,sizeof(fpu));
 }
+inline uint16_t canonical_fpu_control(uint32_t value) {
+    // Authored native PE32 FLDCW/FNSTCW probes: bit 6 reads one; bits 7/13..15
+    // read zero on the measured AMD host. This declared guest profile differs
+    // from Unicorn 2.1.4; reserved bits are not universal architectural promises.
+    return uint16_t((value&0x1f3fu)|0x0040u);
+}
 inline void fldcw(uint32_t address) {
     fwait();
     uint32_t value=rd(address,16);
-    if(!error)fpu_control=uint16_t(value);
+    if(!error)fpu_control=canonical_fpu_control(value);
 }
 inline void fpush(double value) {
     fwait(); if(error)return;
@@ -230,6 +236,66 @@ inline void fcompare(double source,bool pop_value) {
     // NaN/denormal exception behavior is rejected by fload, never approximated.
     fpu_status=(fpu_status&~0x4700u)|(fpu[0]<source?0x0100u:fpu[0]==source?0x4000u:0);
     if(pop_value)fpop();
+}
+inline void fadd_exact(double source,bool subtract) {
+    fwait();if(error)return;
+    if(!fpu_depth) { fault(2,ip,"x87 stack underflow");return; }
+    unsigned precision=(fpu_control>>8)&3u;
+    if(precision==1) { fault(2,ip,"reserved x87 precision control");return; }
+    double a=fpu[0],b=subtract?-source:source;
+    double sum=a+b;
+    if(!std::isfinite(sum)||std::fpclassify(sum)==FP_SUBNORMAL) {
+        fault(2,ip,"x87 arithmetic needs extended exponent range");return;
+    }
+    // Knuth TwoSum recovers the addition's rounding residue. With finite binary64
+    // inputs, a finite normal/zero sum, and no fast-math, zero means exact.
+    // Never accept a rounded double as an extended-precision x87 result.
+    double virtual_b=sum-a;
+    double residue=(a-(sum-virtual_b))+(b-virtual_b);
+    uint64_t bits;std::memcpy(&bits,&sum,8);
+    if(residue!=0 || !std::isfinite(residue) || (precision==0 && (bits&0x1fffffffu))) {
+        fault(2,ip,"rounded or extended-significand x87 arithmetic is not implemented");return;
+    }
+    if(sum==0 && std::signbit(a)!=std::signbit(b))
+        sum=((fpu_control>>10)&3u)==1 ? -0.0 : 0.0;
+    fpu[0]=sum;fpu_status&=~0x0200u; // Exact result: C1=0; other C bits undefined.
+}
+inline void fmul_exact(double source) {
+    fwait();if(error)return;
+    if(!fpu_depth) { fault(2,ip,"x87 stack underflow");return; }
+    unsigned precision=(fpu_control>>8)&3u;
+    if(precision==1) { fault(2,ip,"reserved x87 precision control");return; }
+    double a=fpu[0],product=a*source;
+    if(a!=0 && source!=0) {
+        // Strip powers of two from both finite normal significands. Their odd
+        // product is exact iff its bit length fits the supported precision.
+        // Check the minimum possible length before multiplying, avoiding any
+        // uint64 overflow (the accepted candidate has at most 54 bits).
+        uint64_t left,right;std::memcpy(&left,&a,8);std::memcpy(&right,&source,8);
+        int exponent=int((left>>52)&0x7ffu)+int((right>>52)&0x7ffu)-2046;
+        left=(left&0xfffffffffffffull)|0x10000000000000ull;
+        right=(right&0xfffffffffffffull)|0x10000000000000ull;
+        left>>=__builtin_ctzll(left);right>>=__builtin_ctzll(right);
+        unsigned limit=precision==0?24:53;
+        unsigned left_bits=64u-__builtin_clzll(left),right_bits=64u-__builtin_clzll(right);
+        if(left_bits+right_bits-1>limit) {
+            fault(2,ip,"rounded or extended-significand x87 arithmetic is not implemented");return;
+        }
+        unsigned product_bits=64u-__builtin_clzll(left*right);
+        if(product_bits>limit) {
+            fault(2,ip,"rounded or extended-significand x87 arithmetic is not implemented");return;
+        }
+        exponent+=int(product_bits)+1-int(left_bits)-int(right_bits);
+        // Check the exact exponent before host rounding: an exact value just
+        // below DBL_MIN can round up to a normal double and otherwise evade us.
+        if(exponent < -1022 || exponent > 1023) {
+            fault(2,ip,"x87 arithmetic needs extended exponent range");return;
+        }
+    }
+    if(!std::isfinite(product)||std::fpclassify(product)==FP_SUBNORMAL) {
+        fault(2,ip,"x87 arithmetic needs extended exponent range");return;
+    }
+    fpu[0]=product;fpu_status&=~0x0200u;
 }
 // Control words are real guest state. Only finite, normal/zero exact loads and
 // stores are supported: rounding/denormal/NaN exception behavior must not be
@@ -289,9 +355,14 @@ EMSCRIPTEN_KEEPALIVE void set_fs_base(uint32_t value) { guest::fsbase=value; }
 EMSCRIPTEN_KEEPALIVE uint32_t get_xmm(uint32_t i,uint32_t lane) { return i<8&&lane<4?guest::xmm[i][lane]:0; }
 EMSCRIPTEN_KEEPALIVE void set_xmm(uint32_t i,uint32_t lane,uint32_t bits) { if(i<8&&lane<4) guest::xmm[i][lane]=bits; }
 EMSCRIPTEN_KEEPALIVE uint32_t get_fpu_depth() { return guest::fpu_depth; }
+EMSCRIPTEN_KEEPALIVE uint32_t get_fpu_bits(uint32_t index,uint32_t word) {
+    if(index>=guest::fpu_depth || word>1)return 0;
+    uint64_t bits;std::memcpy(&bits,&guest::fpu[index],8);
+    return uint32_t(bits>>(word*32));
+}
 EMSCRIPTEN_KEEPALIVE uint32_t get_fpu_control() { return guest::fpu_control; }
 EMSCRIPTEN_KEEPALIVE uint32_t get_fpu_status() { return guest::fpu_status; }
-EMSCRIPTEN_KEEPALIVE void set_fpu_control(uint32_t value) { guest::fpu_control=uint16_t(value); }
+EMSCRIPTEN_KEEPALIVE void set_fpu_control(uint32_t value) { guest::fpu_control=guest::canonical_fpu_control(value); }
 EMSCRIPTEN_KEEPALIVE void set_fpu_status(uint32_t value) { guest::fpu_status=uint16_t(value); }
 EMSCRIPTEN_KEEPALIVE uint32_t fault_code() { return guest::error; }
 EMSCRIPTEN_KEEPALIVE uint32_t fault_address() { return guest::error_address; }

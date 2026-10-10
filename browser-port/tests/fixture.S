@@ -18,6 +18,8 @@
 .globl _shld16_unsupported
 .globl _x87_abs, _x87_abs_compare, _x87_compare64, _x87_compare_empty
 .globl _x87_abs_empty
+.globl _x87_add32, _x87_add64, _x87_sub32, _x87_sub64, _x87_add_empty, _x87_sub_empty
+.globl _x87_mul32, _x87_mul64, _x87_mul_empty
 
 _arithmetic:
     push ebp
@@ -323,4 +325,30 @@ _x87_compare_empty:
     ret
 _x87_abs_empty:
     fabs
+    ret
+
+.macro exact_x87 name, operation, width
+_\name:
+    mov ecx, dword ptr [esp+4]
+    mov edx, dword ptr [esp+8]
+    fld qword ptr [ecx]
+    \operation \width ptr [ecx+8]
+    fnstsw ax
+    fstp qword ptr [edx]
+    ret
+.endm
+exact_x87 x87_add32, fadd, dword
+exact_x87 x87_add64, fadd, qword
+exact_x87 x87_sub32, fsub, dword
+exact_x87 x87_sub64, fsub, qword
+exact_x87 x87_mul32, fmul, dword
+exact_x87 x87_mul64, fmul, qword
+_x87_add_empty:
+    fadd dword ptr [esi]
+    ret
+_x87_sub_empty:
+    fsub dword ptr [esi]
+    ret
+_x87_mul_empty:
+    fmul dword ptr [esi]
     ret

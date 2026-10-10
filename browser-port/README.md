@@ -48,6 +48,8 @@ To build and probe the original entry path:
 .\scripts\startup.ps1 -FromTrace
 # Optional bounded probe settings (the current defaults):
 .\scripts\startup.ps1 -FromTrace -Limit 24000 -MaxSteps 2000000
+# Latest constructor checkpoint uses these explicit bounds:
+.\scripts\startup.ps1 -FromTrace -Limit 40000 -MaxSteps 3000000
 ```
 
 This currently returns a nonzero exit code at a required compatibility barrier.
@@ -59,6 +61,10 @@ bound to the audited executable hash. Each probe appends its source/build
 identity, stack words, a bounded fault-memory window, trace, and exact reproduction command to
 `artifacts/startup-history.jsonl`. This is a diagnostic build, not a performance
 build or a successful game launch.
+Each build saves its exact seeds to an immutable, content-addressed snapshot in
+`artifacts/startup-seeds/`. The exported reproduction command uses `--seed-file`;
+PowerShell also accepts `startup.ps1 -SeedFile 'artifacts/startup-seeds/HASH.json'`.
+Replay checks the snapshot hash and does not alter it or default seed progress.
 The current probe reaches original game constructors, then stops at a required
 compatibility barrier. All initialization has not completed.
 
@@ -87,6 +93,9 @@ by executable hash, address, size, and routine-byte hash.
 Synthetic controlled-state cases also check x87 flags after an explicit test
 checkpoint. Known Unicorn C1/#MF and INT64_MIN division defects have named
 specification checks; raw oracle differences remain in local evidence.
+Exact memory FADD/FSUB/FMUL cases exercise all three supported precision settings
+and four rounding modes. Rounded/extended results still fail explicitly; fault
+checks compare retained x87 values as well as status, control and memory.
 The default build also generates a differential reference for the original
 entry prefix through its first imported call, with an explicit 32-bit FS/TEB
 model. `test.ps1` additionally compiles and runs focused Win32-contract tests;
@@ -100,6 +109,11 @@ host's NLS behavior is recorded separately from the declared XP process profile.
 For authored native private-heap comparisons, also run
 `.\.venv\Scripts\python.exe -m tools.win32_heap_reference`. This tests four
 reallocation observations on trusted system APIs, with ignored JSON evidence.
+For native x87 reserved-control-bit observations, run
+`.\.venv\Scripts\python.exe -m tools.native_fpu_reference`. It compiles and runs
+20 authored, import-free PE32 probes with a normal Windows token. No original
+game binary is executed. The observed AMD-host rule is a declared guest profile,
+not a claim about every x87 processor. Raw Unicorn differences are retained.
 
 The runtime currently uses a 64 MiB guest address window and an 80 MiB Wasm heap
 per module. It has explicit page permissions, checked accesses, fault rollback,

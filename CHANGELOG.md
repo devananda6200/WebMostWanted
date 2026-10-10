@@ -4,6 +4,28 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-11T02:43:30+05:30 — exact x87 arithmetic and reproducible startup checkpoints
+
+- Changed: Implemented exact FADD/FSUB/FMUL with precision/exponent guards and
+  x87 value diagnostics; added native control-word probes, declared readback
+  profile, immutable seed snapshots and compact replay. Updated runtime,
+  translator, fixtures, build tools, browser worker and project documentation.
+- Why: Advance observed original constructors while rejecting unsupported
+  rounded arithmetic, and make thousands of retained translation seeds replayable.
+- Validation: 2,335 Node/browser binary cases, 78 Python tests, 33 Win32 groups,
+  20 authored native PE32 probes and 18,147 rational multiplication checks pass.
+  Snapshot replay reproduced identical Wasm and fault without changing inputs.
+  Browser/Node reach FILD at 0x00887040 after 2,053,284 original dispatches.
+- Corrections: Native reserved control-bit readback differs from Unicorn and is
+  explicitly recorded. Review found a multiplication-underflow false acceptance;
+  exact-exponent checks and regression cases fix it. Added missing fixture exports
+  after the linker reported them. Reproduction: scripts/build.ps1 and test.ps1;
+  startup.ps1 -FromTrace -Limit 40000 -MaxSteps 3000000 reaches the current barrier.
+- Limitations: Highest complete milestone M1; M2 remains partial. No menu, game
+  rendering, driving, race completion or replay. Full x87 and platform/rendering
+  services remain incomplete. SoftFloat harness work is separate and unintegrated.
+  Human review pending; all original-derived outputs/evidence remain private.
+
 ## 2026-10-11T02:15:04+05:30 — arithmetic, bounded constructor discovery, and heap resizing
 
 - Changed: Implemented DIV/IDIV, SHLD/SHRD, finite x87 ABS/comparison/status
