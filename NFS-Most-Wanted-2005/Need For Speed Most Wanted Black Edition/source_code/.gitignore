@@ -1,0 +1,8 @@
+/.tools/
+/projects/
+/recovered/
+/evidence/
+/logs/
+/reconstructed/
+__pycache__/
+*.pyc
