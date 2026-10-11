@@ -1,9 +1,40 @@
-# Private original files and executable-derived build outputs
+# Local secrets; sanitized example files may be committed.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+
+# Common dependencies, build output, caches, and local tooling.
+node_modules/
+.next/
+dist/
+build/
+coverage/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+Thumbs.db
+*.log
+
+# Add entries appropriate to your chosen language or framework.
+
+# Original proprietary inputs and local binary-translation artifacts.
+/NFS-Most-Wanted-2005/
+/browser-port/.tools/
+/browser-port/config.local.json
+/browser-port/generated/
+/browser-port/build/
+/browser-port/artifacts/
+/browser-port/test-profiles/
+
+# Private original files and executable-derived build outputs.
 reference/
 artifacts/
 build/
 .tools/
-.venv/
 *.local.json
-__pycache__/
-*.pyc

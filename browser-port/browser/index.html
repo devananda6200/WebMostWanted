@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Most Wanted · Browser translation laboratory</title>
+  <link rel="stylesheet" href="/browser/style.css">
+  <script type="module" src="/browser/main.js"></script>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Local binary translation laboratory</p>
+    <h1>Most Wanted browser port</h1>
+    <p>This host verifies translated machine code and browser services. A playable race has not been demonstrated.</p>
+    <div class="controls">
+      <button id="environment">Check browser environment</button>
+      <button id="tests">Run translation tests</button>
+      <button id="startup">Probe translated startup</button>
+      <button id="stop" disabled>Stop worker</button>
+      <button id="export">Export diagnostics</button>
+    </div>
+    <p id="status" role="status" aria-live="polite">Inspecting local build…</p>
+    <canvas id="screen" width="960" height="540" tabindex="0" aria-label="Game rendering surface. Click to focus keyboard input."></canvas>
+    <p class="caption">Canvas: WebGPU initialization clear only. Original game rendering is not connected. Click the canvas to focus input; Escape releases focus. Race restart becomes available after gameplay is implemented.</p>
+    <section>
+      <h2>Verified observations</h2>
+      <pre id="summary">Waiting for checks.</pre>
+    </section>
+    <section>
+      <h2>Diagnostic events</h2>
+      <pre id="events" aria-live="polite"></pre>
+    </section>
+  </main>
+</body>
+</html>

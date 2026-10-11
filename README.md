@@ -1,20 +1,62 @@
-# NFS Most Wanted 2005 — private Chrome build
+# DevDay Exchange Community Hackathon: Kochi
 
-**Original code is compiled and running in Chrome with WebGPU.** The original title and 3D world were observed directly; the user confirmed driving, audio, race completion and restart. See [test results](docs/test-results.md) for measured evidence and remaining limitations.
+A repository template for participants at the 10–11 October 2026 hackathon. It contains event rules and documentation scaffolding; build your project from scratch at the event.
 
-Open **http://127.0.0.1:8080/** while the private server is running and click **Play**. The first visit automatically acquires about 3.02 GB from the original local installation. Subsequent visits verify/reuse OPFS assets. No folder selection, archive upload, Windows game launch or gameplay streaming is involved.
+**[Event and registration on Luma](https://luma.com/z10nz8gp)** · **[Event rules](RULES.md)** · **[Agent instructions](AGENTS.md)**
 
-To restart the already built local server from this folder:
+## Event details
 
-```powershell
-.\scripts\serve.ps1
-```
+| Detail | Information |
+| --- | --- |
+| Venue | JAIN University, Kochi |
+| Location | [Open the venue map](https://maps.app.goo.gl/Eme7gR7NDXSNRANu5) |
+| Rooms | 2008 and 2009 |
+| Check-in | 10 October 2026, 6:00 PM IST |
+| Kick-off | 10 October 2026, 6:30 PM IST |
+| Wrap-up | 11 October 2026, by 10:00 AM IST |
+| Participation | Solo or a team of up to 4 participants |
+| Theme | Open — build anything you like |
 
-Keep Chrome visible in the foreground. Use the game's original keyboard controls: arrows for driving/menu navigation, Enter to confirm, Escape to pause/back, Space for handbrake, Left Shift for nitrous. Controls and race-completion acceptance are tracked in the test report. Browser saves use a separate OPFS profile directory.
+Keep your approved Luma QR code ready for entry, and bring your laptop and charger. Eligible checked-in participants will receive Codex credits and OpenAI API credits.
 
-- [Build, launch and architecture](docs/browser-runtime.md)
-- [Actual executable and engine evidence](docs/engine-map.md)
-- [File inventory](docs/file-inventory.md)
-- [Verified tests and remaining work](docs/test-results.md)
+## Use this template
 
-Upstream game configuration and runtime are pinned under ignored `reference/nfsmw-recomp`, with their MIT LICENSE/NOTICE retained. This project adds private automatic asset delivery, validation, browser diagnostics and reproducible Windows orchestration. Original files, translated proprietary code and built binaries are private ignored artifacts. Nothing has been publicly deployed; public delivery requires appropriate distribution rights.
+1. Select **Use this template → Create a new repository** on GitHub. Create your own project repository and clone it.
+2. Read [RULES.md](RULES.md) and [AGENTS.md](AGENTS.md) before building. Begin project implementation at the event.
+3. Fill in the project overview below as you build. Use any suitable language or framework, keeping the implementation simple.
+4. Record meaningful changes in [CHANGELOG.md](CHANGELOG.md) and your Codex usage in [AI_USAGE.md](AI_USAGE.md). Commit after completed milestones; aim for a meaningful checkpoint about every 30 minutes.
+5. Complete [SUBMISSION.md](SUBMISSION.md) with your code repository, short project description, and working demo. Follow submission instructions announced by the organizers.
+
+The initial template supplied documentation scaffolding only. The project implementation is described below. The documentation and commit cadence are repository workflow guidance; the event participation rules are in [RULES.md](RULES.md).
+
+## Project: WebMostWanted
+
+Implementation is in [browser-port](browser-port/README.md). This is a local
+binary-translation research port of the supplied Most Wanted executable, with
+an installation audit, x86-to-C++/Wasm tests, and browser host. **A playable race
+has not been demonstrated.** The current verified checkpoint is M1 with partial
+M2 startup execution; the project does not claim a playable game, rendering,
+driving, or race completion.
+
+From `browser-port`, run `scripts/setup.ps1`, configure the ignored local game
+path, then run `scripts/build.ps1`, `scripts/test.ps1`, and `scripts/serve.ps1`.
+The [project README](browser-port/README.md) gives complete setup/demo commands;
+[verified status](browser-port/docs/VERIFIED_STATUS.md) distinguishes tested
+translation from incomplete game initialization and rendering.
+
+Stack: Python, pefile, Capstone, Unicorn reference execution, generated C++,
+Emscripten 4.0.23, WebAssembly, browser workers, WebGPU/Emdawnwebgpu. Dependency
+sources and licenses are recorded in [DEPENDENCIES.md](browser-port/docs/DEPENDENCIES.md).
+Original assets and all game-derived outputs stay local and ignored by Git.
+
+The project is maintained by Festin Biju (`@FestinBiju`). See
+[AI_USAGE.md](AI_USAGE.md) for AI assistance and [CHANGELOG.md](CHANGELOG.md)
+for the development record.
+
+## Local source reconstruction
+
+<!-- local-source-reconstruction -->
+
+A separate [source reconstruction workspace](NFS-Most-Wanted-2005/Need%20For%20Speed%20Most%20Wanted%20Black%20Edition/source_code/README.md) exports 27,112 recognized functions from five supplied binaries with Ghidra 12.1.4. All 1,309,073 exported instruction records match their input PE bytes; all 1,363 original files retain their recorded hashes, sizes and modification times. One reconstructed hash routine passes 1,264 original-x86 versus Node-Wasm cases.
+
+This is unverified decompiler output, with 1,951 functions carrying warnings or diagnostics, not original source or a complete playable port. Decompiled outputs and evidence stay local and ignored. The workspace README contains setup, commands, provenance and limitations.
