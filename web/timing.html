@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Browser timing control</title>
+<style>body{background:#111;color:#ddd;font:16px monospace}#marker{width:60px;height:60px;background:#4bd}pre{white-space:pre-wrap}</style>
+<h1>Browser timing control — no game, Wasm, or WebGPU</h1><div id="marker"></div><pre id="output">Measuring…</pre>
+<script>
+const state={started:new Date().toISOString(),frames:0,timers:0,samples:[]};
+let start=performance.now(),frames=0,timers=0;
+function frame(now){state.frames++;frames++;marker.style.transform=`translateX(${Math.round(now/10)%300}px)`;requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+setInterval(()=>{state.timers++;timers++;const seconds=(performance.now()-start)/1000;if(seconds<5)return;
+state.samples.push({seconds,rafHz:frames/seconds,timerHz:timers/seconds,visibility:document.visibilityState,focused:document.hasFocus()});
+state.samples=state.samples.slice(-12);output.textContent=JSON.stringify(state,null,2);frames=timers=0;start=performance.now()},100);
+</script></html>

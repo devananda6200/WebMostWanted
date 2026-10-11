@@ -1,0 +1,9 @@
+# Private original files and executable-derived build outputs
+reference/
+artifacts/
+build/
+.tools/
+.venv/
+*.local.json
+__pycache__/
+*.pyc

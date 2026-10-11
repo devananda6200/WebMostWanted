@@ -1,0 +1,54 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Private runtime diagnostics</title>
+<style>body{font:15px system-ui;background:#151915;color:#eee;margin:32px}button{padding:12px}pre{white-space:pre-wrap}</style>
+<h1>Original asset delivery diagnostics</h1>
+<p>This test downloads the actual private assets, interrupts and resumes once, verifies cache reuse, and repairs a deliberately corrupted browser copy. It does not claim gameplay.</p>
+<button id="run">Run browser checks</button><pre id="output">Ready</pre>
+<script type="module">
+const out = document.querySelector('#output');
+const results = {userAgent:navigator.userAgent, secure:isSecureContext, isolated:crossOriginIsolated, sharedArrayBuffer:typeof SharedArrayBuffer};
+const show = current => {out.textContent = JSON.stringify({...results,current},null,2);};
+function sync(interruptAt=Infinity) {
+  return new Promise((resolve,reject) => {
+    const worker = new Worker('./asset-worker.js',{type:'module'});
+    worker.onerror = e => {worker.terminate(); reject(Error(e.message));};
+    worker.onmessage = ({data}) => {
+      show(data);
+      if (data.type === 'progress' && data.verified >= interruptAt) {
+        worker.terminate(); resolve({...data,interrupted:true});
+      } else if (data.type === 'complete') {worker.terminate();resolve(data);}
+      else if (data.type === 'error') {worker.terminate();reject(Error(data.message));}
+    };
+    worker.postMessage({});
+  });
+}
+document.querySelector('#run').onclick = async () => {
+  document.querySelector('#run').disabled = true;
+  try {
+    const adapter = await navigator.gpu?.requestAdapter({powerPreference:'high-performance'});
+    if (!adapter) throw Error('No WebGPU adapter');
+    const device = await adapter.requestDevice();
+    results.webgpu = {available:true,features:[...adapter.features],info:{vendor:adapter.info?.vendor,architecture:adapter.info?.architecture,device:adapter.info?.device,description:adapter.info?.description}};
+    const buffer = device.createBuffer({size:4,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.COPY_SRC});
+    device.queue.writeBuffer(buffer,0,new Uint32Array([123]));
+    await device.queue.onSubmittedWorkDone(); buffer.destroy(); device.destroy();
+    const started = performance.now();
+    results.interrupted = await sync(20 * 1024 * 1024);
+    results.resumed = await sync();
+    results.cached = await sync();
+    if (results.cached.downloaded !== 0 || results.cached.cached !== results.cached.verified) throw Error('Cache reuse failed');
+    let dir = await navigator.storage.getDirectory();
+    for (const p of ['nfsmw','game']) dir = await dir.getDirectoryHandle(p);
+    const target = await dir.getFileHandle('00000000.256');
+    const writer = await target.createWritable({keepExistingData:true});
+    const file = await target.getFile();
+    const first = new Uint8Array(await file.slice(0,1).arrayBuffer()); first[0] ^= 255;
+    await writer.write({type:'write',position:0,data:first}); await writer.close();
+    results.repaired = await sync();
+    if (results.repaired.downloaded !== file.size) throw Error('Repair fetched unexpected bytes');
+    results.seconds = (performance.now()-started)/1000;
+    results.pass = true; show('Complete');
+    const blob = new Blob([JSON.stringify(results,null,2)],{type:'application/json'});
+    const a = document.createElement('a'); a.textContent='Save test evidence';a.href=URL.createObjectURL(blob);a.download='browser-assets.json';document.body.append(a);
+  } catch (e) {results.pass=false;results.error=e.message;show('Failed');}
+};
+</script></html>

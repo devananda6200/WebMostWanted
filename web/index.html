@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Most Wanted — private browser runtime</title>
+<style>
+body{margin:0;background:#141714;color:#e8eadf;font:17px/1.5 system-ui,sans-serif}main{max-width:720px;margin:12vh auto;padding:32px}
+h1{font-size:42px;line-height:1.1}button{background:#d5e48e;color:#141714;border:0;border-radius:5px;padding:14px 32px;font:700 18px system-ui;cursor:pointer}button:disabled{opacity:.5;cursor:default}
+progress{display:block;width:100%;height:16px;margin:24px 0}#status{white-space:pre-line}small{color:#a9afa2}a{color:#d5e48e}
+</style></head><body><main>
+<small>PRIVATE LOCAL BUILD · ORIGINAL GAME RECOMPILATION</small>
+<h1>Need for Speed<br>Most Wanted</h1>
+<p>The first play downloads the game from your private local server. Later visits reuse verified browser storage. Saves stay separate.</p>
+<button id="play" disabled>Play</button><progress id="progress" value="0" max="1"></progress>
+<p id="status">Checking runtime…</p><small id="detail"></small>
+</main><script type="module">
+const play = document.querySelector('#play'), status = document.querySelector('#status');
+const bar = document.querySelector('#progress'), detail = document.querySelector('#detail');
+const size = n => (n / 1024 / 1024).toFixed(1) + ' MiB';
+try {
+  if (!isSecureContext || !crossOriginIsolated) throw Error('This runtime needs a secure, cross-origin isolated page. Use the provided local server.');
+  if (!navigator.gpu) throw Error('WebGPU is unavailable in this browser.');
+  if (!(await navigator.gpu.requestAdapter())) throw Error('Chrome could not provide a WebGPU adapter.');
+  const runtime = await fetch('./runtime.json').then(r => r.json());
+  if (!runtime.ready) throw Error('The original-game WebAssembly runtime has not been built successfully yet. Gameplay is unavailable.');
+  status.textContent = 'Ready. The first download is approximately 3.02 GB.';
+  play.disabled = false;
+} catch (e) { status.textContent = e.message; }
+play.onclick = async () => {
+  play.disabled = true;
+  await navigator.storage.persist().catch(() => false);
+  const worker = new Worker('./asset-worker.js', {type:'module'});
+  status.textContent = 'Preparing the original game…';
+  worker.onmessage = ({data}) => {
+    window.assetProgress = data;
+    if (data.type === 'progress') {
+      bar.max = data.total; bar.value = data.verified;
+      status.textContent = `Verified ${size(data.verified)} of ${size(data.total)}`;
+      detail.textContent = `${data.path} · Downloaded ${size(data.downloaded)} · Reused ${size(data.cached)}`;
+    } else if (data.type === 'complete') {
+      worker.terminate(); location.href = './nfsmw/index.html';
+    } else if (data.type === 'error') {
+      status.textContent = data.message + '\nPress Play to resume from the last verified chunk.';
+      play.disabled = false; worker.terminate();
+    }
+  };
+  worker.onerror = e => { status.textContent = e.message; play.disabled = false; worker.terminate(); };
+  worker.postMessage({});
+};
+</script></body></html>
