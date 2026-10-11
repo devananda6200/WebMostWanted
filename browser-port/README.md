@@ -4,9 +4,10 @@ This project translates bounded portions of a locally supplied Most Wanted x86
 executable into C++ and WebAssembly. It is **not a playable game yet**. No original
 game files or generated game code are included in the repository.
 
-The verified checkpoint is M1: an assembled/linked PE32 fixture and a routine
-from the audited game executable pass differential CPU-state/memory tests in
-Node and a browser worker. Original PE-entry execution has begun, but required
+The verified checkpoint is M1 with partial M2 startup execution: an
+assembled/linked PE32 fixture and routines from the audited game executable
+pass differential CPU-state/memory tests in Node and a browser worker. Original
+PE-entry execution reaches the current constructor barrier, but required
 platform services still stop startup. See [verified status](docs/VERIFIED_STATUS.md).
 
 ## Setup on this Windows machine
@@ -49,7 +50,7 @@ To build and probe the original entry path:
 # Optional bounded probe settings (the current defaults):
 .\scripts\startup.ps1 -FromTrace -Limit 24000 -MaxSteps 2000000
 # Latest constructor checkpoint uses these explicit bounds:
-.\scripts\startup.ps1 -FromTrace -Limit 40000 -MaxSteps 3000000
+.\scripts\startup.ps1 -FromTrace -Limit 48000 -MaxSteps 3000000
 ```
 
 This currently returns a nonzero exit code at a required compatibility barrier.
@@ -96,6 +97,8 @@ specification checks; raw oracle differences remain in local evidence.
 Exact memory FADD/FSUB/FMUL cases exercise all three supported precision settings
 and four rounding modes. Rounded/extended results still fail explicitly; fault
 checks compare retained x87 values as well as status, control and memory.
+Signed FILD m16/m32 tests cover integer extremes, all PC/RC settings, pending
+exceptions, memory faults and full-stack rollback. FILD m64 remains unsupported.
 The default build also generates a differential reference for the original
 entry prefix through its first imported call, with an explicit 32-bit FS/TEB
 model. `test.ps1` additionally compiles and runs focused Win32-contract tests;
@@ -114,6 +117,18 @@ For native x87 reserved-control-bit observations, run
 20 authored, import-free PE32 probes with a normal Windows token. No original
 game binary is executed. The observed AMD-host rule is a declared guest profile,
 not a claim about every x87 processor. Raw Unicorn differences are retained.
+
+The separate extended-arithmetic library can be built and tested with:
+
+```powershell
+.\.venv\Scripts\python.exe -m tools.build_softfloat
+& '.\.tools\emsdk-4.0.23\node\22.16.0_64bit\bin\node.exe' tests/run_softfloat.mjs
+```
+
+Use `--offline` after the pinned source archive is cached. This builds Berkeley
+SoftFloat 3e from verified public sources and compares Wasm with authored native
+x87 and rational references. It is not yet linked into gameplay and is separate
+from the binary-translation proof. See [scope and evidence](docs/SOFTFLOAT_BUILD.md).
 
 The runtime currently uses a 64 MiB guest address window and an 80 MiB Wasm heap
 per module. It has explicit page permissions, checked accesses, fault rollback,

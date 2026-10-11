@@ -4,6 +4,13 @@ Record each meaningful project change during the event, newest first. Update thi
 
 ## Event build log
 
+## 2026-10-11T07:05:42+05:30 — clarify project status for submission
+
+- Changed: Updated the root and `browser-port` README files with the current M1/partial-M2 status, explicit no-playable-game limitation, participant attribution, and the verified local workflow.
+- Why: Make the submission documentation accurately describe what is implemented and what remains unverified without overstating the browser port.
+- Validation: Cross-checked the descriptions against `browser-port/docs/VERIFIED_STATUS.md`, `browser-port/docs/DEPENDENCIES.md`, and the existing setup/build/test/serve commands.
+- Limitations: The project still has no authentic menu, game rendering, driving, completed race, or replay; final submission metadata remains in `SUBMISSION.md`.
+
 ## 2026-10-11T03:27:54+05:30 — local source reconstruction export
 
 <!-- local-source-reconstruction -->

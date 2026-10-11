@@ -34,7 +34,9 @@ The initial template supplied documentation scaffolding only. The project implem
 Implementation is in [browser-port](browser-port/README.md). This is a local
 binary-translation research port of the supplied Most Wanted executable, with
 an installation audit, x86-to-C++/Wasm tests, and browser host. **A playable race
-has not been demonstrated.** Participant names have not been supplied.
+has not been demonstrated.** The current verified checkpoint is M1 with partial
+M2 startup execution; the project does not claim a playable game, rendering,
+driving, or race completion.
 
 From `browser-port`, run `scripts/setup.ps1`, configure the ignored local game
 path, then run `scripts/build.ps1`, `scripts/test.ps1`, and `scripts/serve.ps1`.
@@ -47,7 +49,9 @@ Emscripten 4.0.23, WebAssembly, browser workers, WebGPU/Emdawnwebgpu. Dependency
 sources and licenses are recorded in [DEPENDENCIES.md](browser-port/docs/DEPENDENCIES.md).
 Original assets and all game-derived outputs stay local and ignored by Git.
 
-See [AI_USAGE.md](AI_USAGE.md) for AI assistance and [CHANGELOG.md](CHANGELOG.md) for the development record.
+The project is maintained by Festin Biju (`@FestinBiju`). See
+[AI_USAGE.md](AI_USAGE.md) for AI assistance and [CHANGELOG.md](CHANGELOG.md)
+for the development record.
 
 ## Local source reconstruction
 
